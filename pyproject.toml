@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentgc"
+version = "0.1.0"
+description = "Track, review, and safely quarantine files left by AI agents."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agcc = "agentgc.cli:main"
+
+[project.urls]
+Repository = "https://github.com/LIghtJUNction/AgentGC"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agentgc = ["skills/agentgc/*.md"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
