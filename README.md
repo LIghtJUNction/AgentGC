@@ -113,6 +113,63 @@ agcc mark path/to/scratch temporary --note "尚未确认可以清理"
 
 加 `--tag-files` 可在 `run`、`watch` 或 `mark` 时写入文件标记。标签只包含小型索引引用、会话和分类，不包含文件内容。标签可能不受文件系统支持、变旧、被复制或被篡改，**不能据此授权清理**。正式记录始终在 SQLite 中。
 
+## 项目规则 `.agcc` 与本机同步
+
+将 TOML 格式的 `.agcc` 放在项目根目录并提交到 Git。其他成员执行 `agcc` 时使用同一套规则，各自的状态仍保存在本机 SQLite，不上传、不继承其他机器的 inode、会话或清理许可。
+
+```toml
+version = 1
+extends = ["builtin:standard"]
+
+[auto]
+enabled = true
+after = ["run", "watch", "scan"]
+
+[limits]
+max_entries = 200000
+max_seconds = 30
+
+[[rules]]
+id = "build-pressure"
+[rules.when]
+any = [
+  { size_gte = "2 GiB" },
+  { files_gte = 100000 },
+  { growth_gte = "256 MiB", growth_percent_gte = 25 },
+]
+
+[[rules]]
+id = "python-cache"
+[rules.match]
+path = ["**/__pycache__", "**/.pytest_cache"]
+kind = "directory"
+[rules.then]
+suggest = "temporary"
+message = "可再生成缓存；不是清理许可"
+```
+
+同 ID 深度覆盖内置规则的表字段，数组整体替换；`enabled = false` 禁用提醒，`extends = []` 不继承默认提醒。新规则需要 `match` 和 `then`。匹配支持相对路径 `path` 数组、限定子目录 `under`、`kind = file/directory/any`；`*` 匹配单层、`**` 匹配零或多层，路径锚定 `.agcc` 所在目录。所有匹配字段须同时满足。禁止绝对路径、`..`、链接配置和任意脚本。未知字段、重复 ID、非法单位或版本直接报错。
+
+`when.any` 中任一条件组成立即可，同一条件组内必须全部成立。支持 `size_gte`、`files_gte`、`growth_gte`、`growth_percent_gte`；容量单位为 B/KiB/MiB/GiB/KB/MB/GB。省略 `when` 表示路径匹配后直接提出用途建议。`then.attention` 产生注意事项；`then.suggest` 只能为 keep/temporary/review，两者均为独立自动记录，**不覆盖人工文件标签，也不能创建 disposable 或取消清理保护**。
+
+```sh
+agcc rules show
+agcc rules validate
+agcc rules explain ./target
+agcc sync --dry-run
+agcc sync                     # 默认保存本机自动判断
+agcc auto-mark                # 默认预览
+agcc auto-mark --apply
+agcc auto-marks               # 查询自动记录；reviews 仍查询原目录提醒
+agcc --no-project-rules sync   # 忽略项目配置，使用内置提醒；核心保护仍有效
+```
+
+默认从当前目录向上找最近 `.agcc`，不越过 Git 仓库根目录；显式 `--root` 时从第一个根目录发现配置。可在子命令前后使用 `--config /path/to/.agcc` 显式选择。`sync` 未指定根目录时检查项目根；显式根只能位于所选项目内。多项目应分别同步。`run/watch/scan` 仍只观察原来选定的根，配置不扩大跟踪范围；仅在发现 `.agcc` 且 `[auto]` 启用时，最终扫描后自动应用规则。外部根导致自动同步失败时会明确报告，`run` 保留子进程退出码。只读查询不扫描，`gc` 不受自动规则授权。无项目配置的 `pressure` 保持原行为，有配置时使用项目规则；仍默认预览、`--apply` 才保存，命令阈值覆盖不修改 `.agcc`。
+
+判断有命中、未命中、未知三态。不完整扫描只能证明已观察下限超标，不能解除提醒或将未访问路径判为消失。完整扫描建立与项目、根目录、排除项及计量方式绑定的本机增长基线；缺少基线或基线为零时增长比例未知。`notify.cooldown = "24h"` 限制重复提醒；`notify.clear_below = 0.8` 在降到阈值的 80% 以下且完整检查后解除，避免临界值反复提醒。内置状态、Git 元数据和隔离内容按跟踪边界排除；扫描是元数据快照，不是原子文件系统快照或写入者证明。
+
+规则指纹与状态变更历史存于独立 SQLite 表，`sync --dry-run` 不更新规则状态、增长基线和提醒时间。它不更新人工文件索引或伪造写入历史；需要刷新文件索引时仍使用 `scan`。本版支持内置及项目层和命令覆盖，不支持远程同步、用户级配置文件、插件或任意外部继承。
+
 ## 目录膨胀检查与主动标记
 
 ```sh

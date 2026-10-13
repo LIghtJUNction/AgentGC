@@ -113,6 +113,27 @@ known deliverables with `keep`. Mark understood intermediate outputs
 every observed file. Briefly report whether tracking was active, any gaps,
 and relevant leftover candidates. Do not quarantine automatically.
 
+## Shared project rules and local sync
+
+Before changing policy, inspect `agcc rules show` and validate the nearest project
+`.agcc` with `agcc rules validate`. It is bounded declarative TOML, not an executable
+hook. Same-ID project tables override builtin defaults; arrays replace. Never put
+secrets in rules or share SQLite state. Do not use project policy to expand roots,
+authorize disposal, overwrite manual `keep`, or bypass core cleanup protections.
+
+Use `agcc sync --dry-run` to inspect proposed automatic observations, then
+`agcc sync` to save local rule state. `agcc auto-mark` previews and
+`agcc auto-mark --apply` saves. Query `agcc auto-marks` separately from manual
+file labels and the older `reviews` directory notes. Sync never deletes files,
+closes sessions, or manufactures writer history. Use `scan` for the file index.
+
+When a valid `.agcc` enables automatic processing, `run`, `watch`, and `scan`
+reconcile the original selected roots after final scanning. Do not repeat sync
+unnecessarily. Report automatic-processing errors and incomplete scans. Growth
+requires a compatible complete baseline; unknown measurements cannot clear an
+existing alert or prove a path disappeared. Project rules and explicit pressure
+overrides may tune thresholds; they do not change cleanup authorization.
+
 ## Proactive pressure checks and marking
 
 At task completion, after builds/tests/installs/downloads, and when a user mentions

@@ -17,6 +17,14 @@ Thresholds never create disposable reviews. Incomplete byte counts are lower
 bounds; nested candidates and hard links may overlap. Skip symlinks, runtime
 pseudo-filesystems, and unselected mount boundaries; do not read file contents.
 
+`rules.py` loads bounded, non-linked TOML `.agcc` files, validates the closed
+schema, merges builtin policy, and matches anchored relative paths.
+`sync.py` reconciles separate automatic observations and compatible complete-scan
+baselines. Its optional tables are auto_marks, auto_events and sync_baselines.
+No automatic policy changes manual file labels, file history, quarantine or
+cleanup permissions. Incomplete observations cannot resolve attention or missing
+paths. Rule updates carry fingerprints; transitions retain local history.
+
 The package needs Python 3.11 or later. Runtime dependencies: none.
 Build dependency: setuptools. The CLI is `agcc`, not `agentgc`.
 

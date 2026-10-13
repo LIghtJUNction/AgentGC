@@ -32,7 +32,8 @@ SYSTEM_SKIP = {Path("/proc"), Path("/sys"), Path("/dev"), Path("/run")}
 
 def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
               max_entries: int = 200000, max_seconds: float = 30,
-              state_home: Path | None = None, file_threshold: int = 100000) -> dict:
+              state_home: Path | None = None, file_threshold: int = 100000,
+              select=None, include=None) -> dict:
     limits = {**DEFAULTS, **(thresholds or {})}
     if set(limits) != set(DEFAULTS) or any(not isinstance(v, int) or v <= 0 for v in limits.values()):
         raise SafetyError("Thresholds must be positive bytes for known categories")
@@ -93,7 +94,8 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
                         return
                     entries += 1
                     p = Path(entry.path)
-                    if p in SYSTEM_SKIP or entry.name in SKIP or (state_home and p == state_home):
+                    if (p in SYSTEM_SKIP or entry.name in SKIP or (state_home and p == state_home)
+                            or (include and not include(p))):
                         continue
                     if entry.name == ".snapshots":
                         gap(p, "snapshot storage skipped; use filesystem-native space accounting")
@@ -108,13 +110,18 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
                                 continue
                             category = PATH_CATEGORIES.get(p, NAMES.get(entry.name))
                             chain = ancestors
-                            if category:
-                                key = candidate(p, category, ancestors[-1] if ancestors else None)
+                            if category or (select and select(p, 'directory')):
+                                key = candidate(p, category or 'protected', ancestors[-1] if ancestors else None)
                                 chain = (*ancestors, key)
                             walk(p, device, chain)
                             if stopped:
                                 return
                         elif stat.S_ISREG(info.st_mode):
+                            if select and select(p, 'file'):
+                                key = candidate(p, 'protected', ancestors[-1] if ancestors else None)
+                                records[key]['kind'] = 'file'
+                                records[key]['bytes'] = info.st_size
+                                records[key]['files'] = 1
                             for key in ancestors:
                                 records[key]["bytes"] += info.st_size
                                 records[key]["files"] += 1
@@ -128,7 +135,7 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
             gap(root, "root not fully visited; inventory budget exhausted")
             continue
         category = PATH_CATEGORIES.get(root, NAMES.get(root.name))
-        ancestors = (candidate(root, category, None),) if category else ()
+        ancestors = (candidate(root, category or 'protected', None),) if category or (select and select(root, 'directory')) else ()
         walk(root, root.stat().st_dev, ancestors)
     for record in records.values():
         record["reasons"] = []

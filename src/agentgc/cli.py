@@ -18,6 +18,8 @@ from .store import LABELS, Store
 from .pressure import DEFAULTS, MIB, inventory, reviews, save_reviews
 from .tracker import scan_once, track
 from .watch_control import WatchControl, request_stop
+from .rules import load as load_rules, matches
+from .sync import reconcile, marks as automatic_marks
 
 
 def positive(value: str) -> float:
@@ -32,6 +34,8 @@ def parser() -> argparse.ArgumentParser:
     app.add_argument("--version", action="version", version=f"agcc {__version__}")
     app.add_argument("--home", type=Path, default=default_home(), help="private state directory (or AGENTGC_HOME)")
     app.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    app.add_argument("--config", type=Path, help="explicit .agcc configuration")
+    app.add_argument("--no-project-rules", action="store_true", help="ignore project configuration, keep core protections")
     sub = app.add_subparsers(dest="action", required=True)
     for name in ("scan", "run", "watch"):
         cmd = sub.add_parser(name, help={"scan": "index a workspace once", "run": "track a command",
@@ -90,11 +94,24 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--root", action="append", required=True, type=Path)
     cmd.add_argument("--threshold", action="append", default=[], metavar="CATEGORY=MIB",
                      help="override review threshold in MiB (build, dependencies, cache, logs, quarantine, protected)")
-    cmd.add_argument("--max-entries", type=int, default=200000)
-    cmd.add_argument("--file-threshold", type=int, default=100000, help="review a candidate directory with this many files")
-    cmd.add_argument("--max-seconds", type=positive, default=30)
+    cmd.add_argument("--max-entries", type=int)
+    cmd.add_argument("--file-threshold", type=int, help="review a candidate directory with this many files")
+    cmd.add_argument("--max-seconds", type=positive)
     cmd.add_argument("--apply", action="store_true", help="save attention notes only, not file cleanup permission")
     sub.add_parser("reviews", help="list historical directory attention notes; remeasure before acting")
+    for name in ('sync', 'auto-mark'):
+        cmd = sub.add_parser(name, help='reconcile local project rule observations; never clean files')
+        cmd.add_argument('--root', action='append', type=Path)
+        cmd.add_argument('--max-entries', type=int)
+        cmd.add_argument('--max-seconds', type=positive)
+        if name == 'sync':
+            cmd.add_argument('--dry-run', action='store_true')
+        else:
+            cmd.add_argument('--apply', action='store_true')
+    cmd = sub.add_parser('rules', help='inspect declarative project rules')
+    cmd.add_argument('operation', choices=('show', 'list', 'validate', 'explain'))
+    cmd.add_argument('path', nargs='?', type=Path)
+    sub.add_parser('auto-marks', help='query separate automatic observations, not file labels')
     cmd = sub.add_parser("prune", help="preview or prune old events from completed sessions")
     cmd.add_argument("--days", type=positive, default=30)
     cmd.add_argument("--apply", action="store_true")
@@ -103,11 +120,28 @@ def parser() -> argparse.ArgumentParser:
     for cmd in sub.choices.values():
         cmd.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         cmd.add_argument("--home", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        cmd.add_argument('--config', type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        cmd.add_argument('--no-project-rules', action='store_true', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     return app
+
+
+def compact_sync(data):
+    if not isinstance(data, dict) or 'observations' not in data:
+        return data
+    return {k:v for k,v in data.items() if k not in ('observations','changes','notifications')} | {
+        'observed_rules':len(data['observations']), 'changed_rules':len(data['changes']),
+        'changes':[ {k:r[k] for k in ('path','rule_id','state','evaluation') if k in r}
+                    for r in data['changes'][:20]],
+        'notifications':data['notifications'][:20],
+        'note':data['note']+'; output limited to 20 changes/notifications, use --json for details'}
 
 
 def emit(data, machine: bool, stream=None) -> None:
     stream = stream or sys.stdout
+    if not machine:
+        data = compact_sync(data)
+        if isinstance(data, dict) and 'automatic' in data:
+            data = {**data, 'automatic':compact_sync(data['automatic'])}
     if machine:
         print(json.dumps(data, ensure_ascii=True, sort_keys=True), file=stream)
     elif isinstance(data, list) and data and all(isinstance(x, dict) for x in data):
@@ -123,10 +157,36 @@ def emit(data, machine: bool, stream=None) -> None:
 
 def execute(args, store: Store) -> tuple[object, int]:
     action = args.action
+    roots_hint = getattr(args,'root',None)
+    anchor = roots_hint[0] if roots_hint else None
+    config = load_rules(cwd=anchor,config=args.config, disabled=args.no_project_rules) if action in ('scan','run','watch','pressure','sync','auto-mark','rules') else None
+    if action == 'auto-marks':
+        return automatic_marks(store), 0
+    if action == 'rules':
+        if args.operation == 'explain':
+            if args.path is None:
+                raise SafetyError('rules explain requires a path')
+            path = absolute(args.path)
+            no_links(path)
+            kind = 'directory' if path.is_dir() else 'file'
+            return {'path':str(path),'config':config['config'],'fingerprint':config['fingerprint'],
+                    'matching_rules':[r for r in config['rules'] if matches(r,path,kind,Path(config['project']))],
+                    'note':'Path matching only; sync evaluates conditions and records unknown measurements'}, 0
+        return config, 0
+    if action in ('sync','auto-mark'):
+        result = reconcile(store, config, args.root or [Path(config['project'])],
+                           dry_run=args.dry_run if action == 'sync' else not args.apply,
+                           max_entries=args.max_entries, max_seconds=args.max_seconds)
+        return result, 0 if result['complete'] else 1
     if action in ("scan", "run", "watch"):
         scope = Scope(args.root or [Path.cwd()], store.home, args.exclude)
         if action == "scan":
             result = scan_once(store, scope)
+            if config['config'] and config['auto']['enabled'] and action in config['auto']['after']:
+                try:
+                    result['automatic'] = reconcile(store,config,scope.roots,include=scope.includes,excludes=scope.excludes)
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    result['automatic'] = {'complete':False,'error':str(exc)}
             return result, 1 if result["errors"] else 0
         command = None
         if action == "run":
@@ -139,7 +199,13 @@ def execute(args, store: Store) -> tuple[object, int]:
             duration = 3600
         code, sid = track(store, scope, args.agent, args.backend, args.interval, args.reconcile,
                           command, duration, args.tag_files, control)
-        return {"session": sid, "exit_code": code}, code
+        result = {"session": sid, "exit_code": code}
+        if config['config'] and config['auto']['enabled'] and action in config['auto']['after']:
+            try:
+                result['automatic'] = reconcile(store,config,scope.roots,include=scope.includes,excludes=scope.excludes)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                result['automatic'] = {'complete':False,'error':str(exc)}
+        return result, code
     if action == "watch-stop":
         return request_stop(store, args.control), 0
     if action in ("list", "search"):
@@ -212,7 +278,27 @@ def execute(args, store: Store) -> tuple[object, int]:
             if mib > (2**63 - 1) / MIB:
                 raise SafetyError("threshold exceeds supported byte range")
             limits[category] = int(mib * MIB)
-        result = inventory(args.root, limits, args.max_entries, args.max_seconds, store.home, args.file_threshold)
+        if config['config']:
+            from copy import deepcopy
+            import hashlib
+            override = deepcopy(config)
+            for rule in override['rules']:
+                category = rule.get('match',{}).get('category')
+                for clause in rule.get('when',{}).get('any',[]):
+                    if category in limits and 'size_gte' in clause:
+                        clause['size_gte'] = f'{limits[category]} B'
+                    if args.file_threshold is not None and 'files_gte' in clause:
+                        if args.file_threshold <= 0:
+                            raise SafetyError('File-count threshold must be positive')
+                        clause['files_gte'] = args.file_threshold
+            if limits or args.file_threshold is not None:
+                override['fingerprint'] = hashlib.sha256(json.dumps({k:v for k,v in override.items() if k != 'fingerprint'},sort_keys=True).encode()).hexdigest()
+            result = reconcile(store,config,args.root,dry_run=not args.apply,
+                               max_entries=args.max_entries,max_seconds=args.max_seconds,overrides=override)
+            return result, 0 if result['complete'] else 1
+        result = inventory(args.root, limits, 200000 if args.max_entries is None else args.max_entries,
+                           30 if args.max_seconds is None else args.max_seconds, store.home,
+                           100000 if args.file_threshold is None else args.file_threshold)
         if args.apply:
             result["saved_reviews"] = save_reviews(store, result)
             result["mode"] = "mark-review"

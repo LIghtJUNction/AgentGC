@@ -1,0 +1,20 @@
+# Shared project policy; local state stays in each user's SQLite index.
+version = 1
+extends = ["builtin:standard"]
+
+[auto]
+enabled = true
+after = ["run", "watch", "scan"]
+
+[limits]
+max_entries = 200000
+max_seconds = 30
+
+[[rules]]
+id = "python-intermediates"
+[rules.match]
+path = ["**/__pycache__", "**/.pytest_cache", "build", "src/*.egg-info"]
+kind = "directory"
+[rules.then]
+suggest = "temporary"
+message = "Regenerable local build/test intermediate; not cleanup permission"

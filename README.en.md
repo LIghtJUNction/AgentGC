@@ -113,6 +113,56 @@ Time sorting uses the most recently observed change. Activity is the cumulative 
 
 Add `--tag-files` to `run`, `watch`, or `mark` to write file tags. Tags contain small index references, sessions, and classifications, not file contents. They may be unsupported, stale, copied, or tampered with, and **cannot authorize cleanup**. SQLite remains the authoritative record.
 
+## Shared `.agcc` rules and local sync
+
+Commit a TOML `.agcc` in the project root. Team members share policy through Git, not local SQLite state, inode identities, sessions, or cleanup permissions. See the repository's `.agcc` for a runnable example.
+
+```toml
+version = 1
+extends = ["builtin:standard"]
+[auto]
+enabled = true
+after = ["run", "watch", "scan"]
+[limits]
+max_entries = 200000
+max_seconds = 30
+[[rules]]
+id = "build-pressure"
+[rules.when]
+any = [{size_gte = "2 GiB"}, {files_gte = 100000},
+       {growth_gte = "256 MiB", growth_percent_gte = 25}]
+[[rules]]
+id = "python-cache"
+[rules.match]
+path = ["**/__pycache__", "**/.pytest_cache"]
+kind = "directory"
+[rules.then]
+suggest = "temporary"
+message = "Regenerable intermediate; not cleanup permission"
+```
+
+Same-ID tables merge recursively; arrays replace wholesale. `enabled = false` disables a reminder; `extends = []` disables builtin inheritance. New rules need `match` and `then`. Relative `path` patterns, literal `under`, and `kind = file/directory/any` combine with AND. Paths are anchored to the configuration directory; `*` matches one segment and `**` zero or more. Absolute paths, `..`, linked configuration, executable hooks, unknown fields, duplicate IDs, invalid units and unsupported versions are rejected.
+
+`when.any` groups combine with OR; conditions inside a group combine with AND. Supported conditions: size_gte, files_gte, growth_gte, growth_percent_gte. Units: B/KiB/MiB/GiB/KB/MB/GB. Without `when`, matching produces an unconditional suggestion. `then.attention` flags attention; `then.suggest` allows keep/temporary/review only. Automatic records never overwrite manual file labels or authorize disposal.
+
+```sh
+agcc rules show
+agcc rules validate
+agcc rules explain ./target
+agcc sync --dry-run
+agcc sync
+agcc auto-mark
+agcc auto-mark --apply
+agcc auto-marks
+agcc --no-project-rules sync
+```
+
+Discovery starts at the current directory, or first explicit root, and stops at the Git repository boundary. `--config` selects an explicit file; global options also work after subcommands. `sync` defaults to the project root; explicit roots must stay within that project. Sync separate projects separately. With discovered configuration and enabled `[auto]`, run/watch/scan automatically reconcile after their final scan without expanding their original roots. External roots are reported as an automatic-sync failure; run preserves the child exit code. Queries do not scan; gc gains no authorization. Without project policy, pressure keeps its previous behavior; with policy, it uses project rules, remains preview-first, and saves only with `--apply`. Command overrides never edit configuration. `reviews` retains its existing directory-note meaning; `auto-marks` queries automatic rule states.
+
+Evaluation is matched/not-matched/unknown. Incomplete lower bounds may prove a hit, never resolution or disappearance. Complete scans establish local growth baselines keyed by project, roots, exclusions and measurement. Missing or zero baselines make growth percentage unknown. `notify.cooldown = "24h"` throttles alerts; `notify.clear_below = 0.8` requires a complete measurement below 80% before resolution. Internal state, Git metadata and quarantine contents remain excluded. Metadata scans are not atomic filesystem snapshots or proof of writer identity.
+
+Separate SQLite tables retain effective-policy fingerprints and transition history. Dry runs do not update rule states, baselines or notification times. Sync does not update the manual file index or manufacture writer history; use scan to refresh that index. This version supports builtin/project layers and command overrides, not remote state sync, user-level configuration files, plugins or external inheritance.
+
 ## Directory pressure and proactive marking
 
 ```sh
