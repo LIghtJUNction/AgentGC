@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agentgc.cli import main
 from agentgc.cleanup import mark, plan, quarantine_one, recover, restore
@@ -500,17 +500,76 @@ class Workspace(unittest.TestCase):
         return subprocess.Popen([sys.executable, "-m", "agentgc", "--home", str(self.home), *map(str, args)],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
 
+    @staticmethod
+    def stop_process(process):
+        """Reap the owned test process with bounded waits; close captured pipes."""
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=3)
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
+    def test_cli_timeout_reaps_process_and_preserves_timeout(self):
+        process = Mock()
+        process.poll.return_value = None
+        timeout = subprocess.TimeoutExpired("test-cli", 10)
+        process.communicate.side_effect = [timeout, ("", "")]
+        with patch.object(self, "subprocess_cli", return_value=process):
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                self.test_real_cli_run_preserves_stdout_and_passes_session_environment()
+        self.assertIs(raised.exception, timeout)
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+        self.assertEqual(process.communicate.call_count, 2)
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_escalates_with_bounded_waits(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.communicate.side_effect = [subprocess.TimeoutExpired("test-cli", 3), ("", "")]
+        self.stop_process(process)
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.communicate.call_args_list,
+                         [unittest.mock.call(timeout=3), unittest.mock.call(timeout=3)])
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_reaps_real_sleeping_child(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.stop_process(process)
+            self.assertIsNotNone(process.poll())
+            self.assertTrue(process.stdout.closed)
+            self.assertTrue(process.stderr.closed)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=3)
+
     def test_real_cli_run_preserves_stdout_and_passes_session_environment(self):
         output = self.root / "session-id"
         script = "import os,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(os.environ['AGENTGC_SESSION']); print('child-only')"
         process = self.subprocess_cli("--json", "run", "--root", self.root, "--backend", "poll", "--",
                                       sys.executable, "-c", script, output)
-        stdout, stderr = process.communicate(timeout=10)
-        self.assertEqual(process.returncode, 0, stderr)
-        self.assertEqual(stdout, "child-only\n")
-        sid = output.read_text()
-        self.assertIsNotNone(self.store.db.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone())
-        self.assertEqual(self.store.file(output)["source"], "session-correlated")
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(stdout, "child-only\n")
+            sid = output.read_text()
+            self.assertIsNotNone(self.store.db.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone())
+            self.assertEqual(self.store.file(output)["source"], "session-correlated")
+        finally:
+            self.stop_process(process)
 
     @unittest.skipIf(os.name == "nt", "POSIX termination signal")
     def test_sigterm_final_scan_and_exit_status(self):
