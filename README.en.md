@@ -91,6 +91,18 @@ Renames are recorded as the old path disappearing and the new path appearing. Re
 
 Human actions and other processes in a shared directory may also be observed. This version does not implement process-level attribution through Linux eBPF/fanotify, macOS Endpoint Security, or Windows ETW. Agent names are user-provided session labels.
 
+## Output format
+
+Default output is compact Markdown: a command heading, summary and bullet rows, rather than indented JSON. Sizes use readable units; routine summaries omit internal hashes/signatures and repeated measurements. Ordinary lists display at most 20 returned rows with explicit omission counts; query limits and scope are unchanged. `list/search` show the next offset; preserve your filters. Commands without offset support, such as `history`, can use `--json` for all returned rows. JSON is still subject to query limits, not the entire index.
+
+```sh
+agcc list --sort size --limit 20
+agcc sync --dry-run
+agcc --json list --sort size --limit 100   # machine parsing and raw returned records
+```
+
+JSON payloads remain unchanged; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. Tracking gaps absent from the result are reported as unavailable, never inferred as zero from successful exit.
+
 ## Queries and labels
 
 ```sh

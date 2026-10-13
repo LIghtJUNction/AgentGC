@@ -9,7 +9,12 @@
 `watch_control.py` provides task-scoped readiness and cooperative stop requests.
 `tags.py` writes optional platform metadata. Tags are never trusted input.
 `cleanup.py` handles review, quarantine, restore, and recovery records.
-`cli.py` parses commands and formats output. The bundled skill is package data.
+`cli.py` parses commands and dispatches output. The bundled skill is package data.
+`output.py` renders compact, escaped Markdown without mutating command results.
+JSON retains original payloads and query limits. Routine rows have a visible
+20-row presentation cap; GC decisions, recovery and returned error/gap reasons
+do not. Count unknown evaluations over all sync observations, not only changes.
+Formatting never manufactures gap-free tracking or changes child streams/codes.
 `pressure.py` inventories directory growth candidates with explicit roots and
 entry/time/depth budgets. Optional SQLite `directory_reviews` records are
 historical attention notes, separate from file labels and cleanup authorization.

@@ -71,12 +71,21 @@ without permission. Do not record API keys or secrets in agent names or notes.
 
 ## Query
 
+Prefer default compact Markdown for agent inspection to avoid dumping repetitive
+JSON fields. Use `--json` only for programmatic parsing, exact raw metadata, or
+all returned rows. Markdown shows at most 20 routine rows with explicit omission
+counts; retain original filters and paginate using the displayed offset. A page
+is not the whole index. GC/refusal details, recovery records and returned gaps
+are not presentation-capped. Unknown is not zero; child exit success does not
+prove gap-free tracking. `run` preserves child stdout/stderr; its own summary is
+on stderr. Never scrape Markdown as a machine API.
+
 ```sh
-agcc --json list --sort size
-agcc --json search output
-agcc --json history path/to/file
-agcc --json sessions
-agcc --json stats
+agcc list --sort size --limit 20
+agcc search output --limit 20
+agcc history path/to/file --limit 20
+agcc sessions
+agcc stats
 ```
 
 Use `--limit` and `--offset` to keep tool output small. Global `--json` and
@@ -94,10 +103,10 @@ Do not fill in missing source, size, or history from guesses.
 Request a stop only for the watcher you started:
 
 ```sh
-agcc --json watch-stop "$control"
-agcc --json sessions
-agcc --json list --session SESSION_ID --sort time --limit 50
-agcc --json history --session SESSION_ID --limit 50
+agcc watch-stop "$control"
+agcc sessions
+agcc list --session SESSION_ID --sort time --limit 20
+agcc history --session SESSION_ID --limit 20
 ```
 
 `watch-stop` is a cooperative request, not immediate completion and not cleanup
@@ -147,9 +156,9 @@ Report newly observed, worsened, or unresolved hotspots; keep known stable warni
 in the index. A whole-system pass requires the user's explicit scope.
 
 ```sh
-agcc --json pressure --root . --root /known/cache --max-seconds 30
-agcc --json pressure --root . --threshold build=1024 --apply
-agcc --json reviews
+agcc pressure --root . --root /known/cache --max-seconds 30
+agcc pressure --root . --threshold build=1024 --apply
+agcc reviews
 ```
 
 Defaults are review thresholds, not deletion rules:

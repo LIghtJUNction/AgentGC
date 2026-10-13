@@ -91,6 +91,18 @@ agcc scan --root .
 
 共享目录内的人类操作和其他进程也可能被观察到。本版本没有实现 Linux eBPF/fanotify、macOS Endpoint Security 或 Windows ETW 的进程级归属。Agent 名称是用户提供的会话标签。
 
+## 输出格式
+
+默认输出紧凑 Markdown：命令标题、摘要和项目符号明细，不再输出缩进 JSON。容量使用可读单位；内部签名、摘要和重复测量不在普通摘要中展开。普通列表最多显示 20 条已返回记录，明确省略数量；查询范围与原有 `--limit` 不变。`list/search` 显示下一页 offset，需保留原筛选条件；`history` 等无 offset 的命令可用 `--json` 获取全部已返回记录。JSON 也仍受查询上限约束，不等于完整索引。
+
+```sh
+agcc list --sort size --limit 20
+agcc sync --dry-run
+agcc --json list --sort size --limit 100   # 脚本解析、原始字段与完整返回记录
+```
+
+`--json` 的数据和结构不变；不要用 Markdown 做机器解析。GC 候选与拒绝原因、恢复记录、已返回的错误和缺口不加展示层截断。sync 汇总全部观察中的 unknown，即使状态未变化；未完整扫描仍明确提示。路径、备注中的控制字符、双向字符与 HTML 转义显示，原始值从 JSON 查询。`run` 的子命令 stdout/stderr 和退出码不变，agcc 自身的 Markdown 摘要在 stderr；摘要未包含跟踪缺口数时显示不可用，不把退出成功当作无缺口。
+
 ## 查询与标记
 
 ```sh

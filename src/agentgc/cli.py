@@ -20,6 +20,7 @@ from .tracker import scan_once, track
 from .watch_control import WatchControl, request_stop
 from .rules import load as load_rules, matches
 from .sync import reconcile, marks as automatic_marks
+from .output import markdown
 
 
 def positive(value: str) -> float:
@@ -125,34 +126,12 @@ def parser() -> argparse.ArgumentParser:
     return app
 
 
-def compact_sync(data):
-    if not isinstance(data, dict) or 'observations' not in data:
-        return data
-    return {k:v for k,v in data.items() if k not in ('observations','changes','notifications')} | {
-        'observed_rules':len(data['observations']), 'changed_rules':len(data['changes']),
-        'changes':[ {k:r[k] for k in ('path','rule_id','state','evaluation') if k in r}
-                    for r in data['changes'][:20]],
-        'notifications':data['notifications'][:20],
-        'note':data['note']+'; output limited to 20 changes/notifications, use --json for details'}
-
-
-def emit(data, machine: bool, stream=None) -> None:
+def emit(data, machine: bool, stream=None, command: str = 'agcc', offset: int = 0) -> None:
     stream = stream or sys.stdout
-    if not machine:
-        data = compact_sync(data)
-        if isinstance(data, dict) and 'automatic' in data:
-            data = {**data, 'automatic':compact_sync(data['automatic'])}
     if machine:
         print(json.dumps(data, ensure_ascii=True, sort_keys=True), file=stream)
-    elif isinstance(data, list) and data and all(isinstance(x, dict) for x in data):
-        for item in data:
-            if "path" in item and "size" in item and "label" in item:
-                print(f"{item['size']:>12}  {item['label']:<10}  {item['source']:<20}  "
-                      f"{json.dumps(item['path'], ensure_ascii=False)}", file=stream)
-            else:
-                print(json.dumps(item, ensure_ascii=True, sort_keys=True), file=stream)
     else:
-        print(json.dumps(data, ensure_ascii=True, indent=2), file=stream)
+        print(markdown(data, command, offset), end='', file=stream)
 
 
 def execute(args, store: Store) -> tuple[object, int]:
@@ -328,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                 path = folder / "SKILL.md"
                 with path.open("x", encoding="utf-8") as stream:
                     stream.write(content)
-                emit({"installed": str(path)}, args.json)
+                emit({"installed": str(path)}, args.json, command='skill')
             elif args.json:
                 emit({"content": content}, True)
             else:
@@ -337,13 +316,14 @@ def main(argv: list[str] | None = None) -> int:
         store = Store(args.home)
         result, code = execute(args, store)
         # Child stdout stays untouched, including when --json is used.
-        emit(result, args.json, sys.stderr if args.action == "run" else sys.stdout)
+        emit(result, args.json, sys.stderr if args.action == "run" else sys.stdout,
+             args.action, getattr(args, 'offset', 0))
         return code
     except (OSError, ValueError, sqlite3.Error) as exc:
         if args.json:
             emit({"error": str(exc)}, True, sys.stderr)
         else:
-            print(f"agcc: {exc}", file=sys.stderr)
+            emit({'error': str(exc)}, False, sys.stderr, args.action)
         return 2
     except KeyboardInterrupt:
         return 130

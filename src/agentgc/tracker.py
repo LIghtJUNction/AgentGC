@@ -15,6 +15,7 @@ from .paths import Scope, SafetyError, regular, signature
 from .store import Store
 from .tags import write_tag
 from .watch_control import WatchControl
+from .output import inline
 
 
 class Tracker:
@@ -101,7 +102,7 @@ class Tracker:
         self.last_gap = detail
         self.store.db.execute("UPDATE sessions SET gaps=gaps+1 WHERE id=?", (self.session,))
         self.store.event("", "gap", "tracker", self.session, detail=detail)
-        print(f"agcc: {detail}", file=sys.stderr)
+        print(f"- agcc gap: {inline(detail)}", file=sys.stderr)
 
 
 def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interval: float = 1,
@@ -111,7 +112,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
         raise SafetyError("interval must be >= 0.1; reconcile >= interval; duration > 0")
     observer, warning = make_backend(scope, backend)
     if warning:
-        print(f"agcc: {warning}", file=sys.stderr)
+        print(f"- agcc warning: {inline(warning)}", file=sys.stderr)
     sid = store.start_session(agent, scope.roots, observer.name if observer else "poll",
                               Path(command[0]).name if command else None)
     tracker = Tracker(store, scope, sid, tag_files)
