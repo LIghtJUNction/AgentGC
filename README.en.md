@@ -237,9 +237,11 @@ Directory scans use streaming traversal without holding a second full file index
 ```sh
 agcc prune --days 30
 agcc prune --days 30 --apply
+agcc prune --days 30 --rule-history          # Also preview old rule transitions
+agcc prune --days 30 --rule-history --apply
 ```
 
-`prune` removes old events from ended sessions while preserving the file index, cumulative activity counts, labels, sessions, and quarantine journal. Events for running sessions are retained. Pruned detailed history can no longer be queried; filtering files by session also depends on retained events. SQLite reuses free pages but does not guarantee that the database file immediately shrinks.
+`prune` removes old events from ended sessions while preserving the file index, cumulative activity counts, labels, sessions, and quarantine journal. Events for running sessions are retained. `--rule-history` explicitly opts into previewing or pruning old rule-transition events; current automatic marks, growth baselines and configuration are retained. Because transitions have no session identity, rule history is skipped with a reason whenever any session is still `running`, including stale sessions. Default pruning does not touch rule history or schedule automatic retention. Unknown timestamps and events within the retention window are preserved. Rule-history pruning is irreversible too. Pruned detailed history can no longer be queried; filtering files by session also depends on retained events. SQLite reuses free pages but does not guarantee that the database file immediately shrinks.
 
 ## Installing the skill
 

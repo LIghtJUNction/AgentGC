@@ -32,7 +32,12 @@ schema, merges builtin policy, and matches anchored relative paths.
 `sync.py` reconciles separate automatic observations and compatible complete-scan
 baselines. Its optional tables are auto_marks, auto_events and sync_baselines.
 No automatic policy changes manual file labels, file history, quarantine or
-cleanup permissions. Incomplete observations cannot resolve attention or missing
+cleanup permissions. `prune --rule-history` explicitly opts into preview/apply
+retention for old `auto_events`, without changing current marks or baselines.
+Because those transitions have no session identity, skip all rule-history pruning
+while any session remains running, even with an expired heartbeat. Count, guard
+and delete share the same immediate transaction. Default prune behavior and its
+JSON shape remain unchanged; no optional tables are created by pruning. Incomplete observations cannot resolve attention or missing
 paths. Rule updates carry fingerprints; transitions retain local history.
 
 The package needs Python 3.11 or later. Runtime dependencies: none.
@@ -71,7 +76,9 @@ AgentGC session records; failures to reap remain visible.
 The archive regression requires the existing setuptools build dependency and
 explicitly skips if unavailable. It builds a wheel and sdist without downloads,
 using synthetic cache/quarantine/state files and a stale manifest in a temporary
-source tree. It checks exclusion and preservation of runtime modules and skill;
+source tree. It also reconstructs the owned sdist using validated regular-file
+paths (never archive link extraction) and builds a second wheel offline. The
+rebuilt wheel must have the same members and bundled skill as the direct build;
 the temporary tree and archives are removed even after failure.
 Linux tests exercise actual inotify, xattr writes when supported, SIGTERM,
 and a killed watcher. Windows skips POSIX-only tests. Tests that require

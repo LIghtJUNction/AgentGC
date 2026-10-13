@@ -54,6 +54,65 @@ class RulesTests(unittest.TestCase):
             code = main(['--home',str(self.store.home),'--config',str(self.config),'--json',*args])
         return code,output.getvalue(),error.getvalue()
 
+    def test_rule_history_prune_is_opt_in_preview_first_and_preserves_state(self):
+        reconcile(self.store, self.settings(), [self.root])
+        self.store.db.execute('UPDATE auto_events SET at=0')
+        before = {table: [tuple(r) for r in self.store.db.execute('SELECT * FROM ' + table)]
+                  for table in ('auto_marks', 'sync_baselines', 'files', 'sessions', 'quarantine')}
+        code, out, err = self.cli('prune', '--days', '30', '--apply')
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('rule_history', json.loads(out))
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM auto_events').fetchone()[0], 1)
+        code, out, err = self.cli('prune', '--days', '30', '--rule-history')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['rule_history']['events'], 1)
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM auto_events').fetchone()[0], 1)
+        code, out, err = self.cli('prune', '--days', '30', '--rule-history', '--apply')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['rule_history']['events'], 1)
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM auto_events').fetchone()[0], 0)
+        after = {table: [tuple(r) for r in self.store.db.execute('SELECT * FROM ' + table)]
+                 for table in before}
+        self.assertEqual(after, before)
+
+    def test_rule_history_prune_protects_running_and_stale_sessions(self):
+        reconcile(self.store, self.settings(), [self.root])
+        self.store.db.execute('UPDATE auto_events SET at=0')
+        sid = self.store.start_session('writer', [self.root], 'poll')
+        self.store.db.execute('UPDATE sessions SET heartbeat=0,pid=-1 WHERE id=?', (sid,))
+        for apply in ((), ('--apply',)):
+            code, out, err = self.cli('prune', '--rule-history', *apply)
+            self.assertEqual(code, 0, err)
+            history = json.loads(out)['rule_history']
+            self.assertTrue(history['skipped'])
+            self.assertEqual(history['events'], 0)
+            self.assertIn('running session', history['reason'])
+            self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM auto_events').fetchone()[0], 1)
+        self.assertEqual(self.store.stats()['active_sessions'], 1)
+
+    def test_rule_history_prune_keeps_cutoff_recent_and_unknown_timestamps(self):
+        from unittest.mock import patch
+        reconcile(self.store, self.settings(), [self.root])
+        cutoff = 10_000_000 - 30 * 86400
+        self.store.db.execute('UPDATE auto_events SET at=?', (cutoff - 1,))
+        for at in (cutoff, cutoff + 1, None):
+            self.store.db.execute('INSERT INTO auto_events(at) VALUES(?)', (at,))
+        with patch('agentgc.cli.time.time', return_value=10_000_000):
+            code, out, err = self.cli('prune', '--rule-history', '--apply')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['rule_history']['events'], 1)
+        self.assertEqual([r[0] for r in self.store.db.execute('SELECT at FROM auto_events ORDER BY id')],
+                         [cutoff, cutoff + 1, None])
+
+    def test_rule_history_prune_does_not_create_optional_tables(self):
+        for apply in ((), ('--apply',)):
+            code, out, err = self.cli('prune', '--rule-history', *apply)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)['rule_history']['events'], 0)
+            self.assertFalse(json.loads(out)['rule_history']['skipped'])
+        self.assertIsNone(self.store.db.execute(
+            "SELECT name FROM sqlite_master WHERE name='auto_events'").fetchone())
+
     def test_discovery_from_subdirectory_and_git_boundary(self):
         self.assertEqual(load(self.file.parent)['config'],str(self.config))
         (self.file.parent/'.git').mkdir()

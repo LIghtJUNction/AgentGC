@@ -97,3 +97,42 @@ class PackagingTests(unittest.TestCase):
                                           "local-state", "unrelated")), name)
             self.assertTrue(any(n.endswith("tests/process_helpers.py") for n in sdist_names))
             self.assertFalse(any(n.startswith("tests/") for n in wheel_names))
+
+            # Reconstruct the owned sdist without extracting archive paths/links.
+            rebuilt = root / "rebuilt"
+            rebuilt.mkdir()
+            with tarfile.open(sdists[0]) as sdist:
+                members = sdist.getmembers()
+                prefixes = set()
+                for member in members:
+                    parts = member.name.split("/")
+                    self.assertTrue(parts and all(p not in ("", ".", "..") for p in parts))
+                    self.assertFalse(any("\\" in p or ":" in p for p in parts))
+                    self.assertTrue(member.isdir() or member.isfile(), member.name)
+                    prefixes.add(parts[0])
+                self.assertEqual(len(prefixes), 1)
+                for member in members:
+                    destination = rebuilt.joinpath(*member.name.split("/"))
+                    if member.isdir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                    else:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        with sdist.extractfile(member) as source, destination.open("xb") as target:
+                            shutil.copyfileobj(source, target)
+            rebuilt_output = root / "rebuilt-output"
+            rebuilt_output.mkdir()
+            process = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import setuptools.build_meta as b,sys; b.build_wheel(sys.argv[1])",
+                 str(rebuilt_output)], cwd=rebuilt / next(iter(prefixes)), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                stdout, stderr = process.communicate(timeout=60)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+            finally:
+                stop_process(process)
+            rebuilt_wheels = list(rebuilt_output.glob("*.whl"))
+            self.assertEqual(len(rebuilt_wheels), 1)
+            with zipfile.ZipFile(rebuilt_wheels[0]) as wheel:
+                self.assertEqual(set(wheel.namelist()), set(wheel_names))
+                self.assertEqual(wheel.read("agentgc/skills/agentgc/SKILL.md"), skill.read_bytes())

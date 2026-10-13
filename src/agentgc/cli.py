@@ -19,7 +19,7 @@ from .pressure import DEFAULTS, MIB, inventory, reviews, save_reviews
 from .tracker import scan_once, track
 from .watch_control import WatchControl, request_stop
 from .rules import load as load_rules, matches
-from .sync import reconcile, marks as automatic_marks
+from .sync import reconcile, marks as automatic_marks, table_exists
 from .output import DISPLAY_LIMIT, markdown
 
 
@@ -126,6 +126,8 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("prune", help="preview or prune old events from completed sessions")
     cmd.add_argument("--days", type=positive, default=30)
     cmd.add_argument("--apply", action="store_true")
+    cmd.add_argument("--rule-history", action="store_true",
+                     help="also prune old rule-transition events; skip these while any session is running")
     cmd = sub.add_parser("skill", help="print or install the bundled Agent Skill")
     cmd.add_argument("--install", type=Path, help="parent skills directory; never overwrite an existing skill")
     for cmd in sub.choices.values():
@@ -313,12 +315,26 @@ def execute(args, store: Store) -> tuple[object, int]:
     if action == "prune":
         cutoff = time.time() - args.days * 86400
         condition = "at<? AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status<>'running'))"
+        result = {"mode": "apply" if args.apply else "preview",
+                  "note": "Index, labels, and quarantine journal are retained. SQLite reuses freed pages."}
         with store.transaction():
-            count = store.db.execute("SELECT COUNT(*) FROM events WHERE " + condition, (cutoff,)).fetchone()[0]
+            result["events"] = store.db.execute("SELECT COUNT(*) FROM events WHERE " + condition, (cutoff,)).fetchone()[0]
             if args.apply:
                 store.db.execute("DELETE FROM events WHERE " + condition, (cutoff,))
-        return {"mode": "apply" if args.apply else "preview", "events": count,
-                "note": "Index, labels, and quarantine journal are retained. SQLite reuses freed pages."}, 0
+            if args.rule_history:
+                # Rule events have no session identity. Protect all of them while
+                # any session is running, including stale sessions, under this lock.
+                running = store.db.execute("SELECT 1 FROM sessions WHERE status='running' LIMIT 1").fetchone()
+                history = {"events": 0, "skipped": bool(running),
+                           "note": "Current rule observations and growth baselines are retained."}
+                if running:
+                    history["reason"] = "A running session exists; rule history cannot be attributed to a completed session."
+                elif table_exists(store, "auto_events"):
+                    history["events"] = store.db.execute("SELECT COUNT(*) FROM auto_events WHERE at<?", (cutoff,)).fetchone()[0]
+                    if args.apply:
+                        store.db.execute("DELETE FROM auto_events WHERE at<?", (cutoff,))
+                result["rule_history"] = history
+        return result, 0
     raise SafetyError(f"Unknown command: {action}")
 
 
