@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 
+from process_helpers import stop_process
+
 from agentgc.paths import SafetyError
 from agentgc.store import Store
 from agentgc.watch_control import WatchControl, request_stop
@@ -118,9 +120,7 @@ class ControlledWatchTests(unittest.TestCase):
             self.assertEqual(self.store.file(output)["size"], len("final result"))
             self.assertEqual(self.store.file(output)["source"], "session-correlated")
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.communicate(timeout=5)
+            stop_process(process)
 
     def test_failed_baseline_never_publishes_readiness(self):
         from unittest.mock import patch

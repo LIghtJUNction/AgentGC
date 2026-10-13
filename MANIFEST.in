@@ -1,0 +1,5 @@
+# Discard stale SOURCES.txt entries; ship only the runtime modules and skill.
+recursive-exclude src *
+include src/agentgc/*.py
+include src/agentgc/skills/agentgc/*.md
+include tests/process_helpers.py

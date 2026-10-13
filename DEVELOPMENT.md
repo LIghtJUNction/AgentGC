@@ -38,6 +38,13 @@ paths. Rule updates carry fingerprints; transitions retain local history.
 The package needs Python 3.11 or later. Runtime dependencies: none.
 Build dependency: setuptools. The CLI is `agcc`, not `agentgc`.
 
+Release discovery explicitly selects the `agentgc` runtime package, not implicit
+namespace directories. Package data is limited to the bundled skill. `MANIFEST.in`
+resets source-tree entries from stale `SOURCES.txt` manifests, then includes only
+runtime modules and the skill. If adding a runtime subpackage or resource, update
+both the discovery/data configuration and manifest allowlist deliberately.
+Never ship local quarantine contents, caches or SQLite state.
+
 ## Run tests
 
 Install the package, then run:
@@ -55,6 +62,17 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 The tests create isolated temporary workspaces. They never clean user files.
+`tests/process_helpers.py` provides bounded direct-child cleanup: terminate, wait
+up to 3 seconds, then kill and wait up to 3 seconds if needed; close captured pipes
+on both success and failure. Cleanup waits for the child rather than draining
+pipes that descendants may keep open. It does not terminate descendants or close
+AgentGC session records; failures to reap remain visible.
+
+The archive regression requires the existing setuptools build dependency and
+explicitly skips if unavailable. It builds a wheel and sdist without downloads,
+using synthetic cache/quarantine/state files and a stale manifest in a temporary
+source tree. It checks exclusion and preservation of runtime modules and skill;
+the temporary tree and archives are removed even after failure.
 Linux tests exercise actual inotify, xattr writes when supported, SIGTERM,
 and a killed watcher. Windows skips POSIX-only tests. Tests that require
 symlinks skip when the operating system does not grant that capability.

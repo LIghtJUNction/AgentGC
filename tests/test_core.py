@@ -12,7 +12,9 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
+
+from process_helpers import stop_process
 
 from agentgc.cli import main
 from agentgc.cleanup import mark, plan, quarantine_one, recover, restore
@@ -500,48 +502,77 @@ class Workspace(unittest.TestCase):
         return subprocess.Popen([sys.executable, "-m", "agentgc", "--home", str(self.home), *map(str, args)],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
 
-    @staticmethod
-    def stop_process(process):
-        """Reap the owned test process with bounded waits; close captured pipes."""
-        try:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate(timeout=3)
-        finally:
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+    stop_process = staticmethod(stop_process)
 
     def test_cli_timeout_reaps_process_and_preserves_timeout(self):
         process = Mock()
         process.poll.return_value = None
         timeout = subprocess.TimeoutExpired("test-cli", 10)
-        process.communicate.side_effect = [timeout, ("", "")]
+        process.communicate.side_effect = timeout
         with patch.object(self, "subprocess_cli", return_value=process):
             with self.assertRaises(subprocess.TimeoutExpired) as raised:
                 self.test_real_cli_run_preserves_stdout_and_passes_session_environment()
         self.assertIs(raised.exception, timeout)
         process.terminate.assert_called_once()
         process.kill.assert_not_called()
-        self.assertEqual(process.communicate.call_count, 2)
+        process.communicate.assert_called_once_with(timeout=10)
+        process.wait.assert_called_once_with(timeout=3)
         process.stdout.close.assert_called_once()
         process.stderr.close.assert_called_once()
 
     def test_process_cleanup_escalates_with_bounded_waits(self):
         process = Mock()
         process.poll.return_value = None
-        process.communicate.side_effect = [subprocess.TimeoutExpired("test-cli", 3), ("", "")]
+        process.wait.side_effect = [subprocess.TimeoutExpired("test-cli", 3), 0]
         self.stop_process(process)
         process.terminate.assert_called_once()
         process.kill.assert_called_once()
-        self.assertEqual(process.communicate.call_args_list,
-                         [unittest.mock.call(timeout=3), unittest.mock.call(timeout=3)])
+        self.assertEqual(process.wait.call_args_list, [call(timeout=3), call(timeout=3)])
+        process.communicate.assert_not_called()
         process.stdout.close.assert_called_once()
         process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_closes_pipes_when_reaping_fails(self):
+        process = Mock()
+        process.poll.return_value = None
+        first = subprocess.TimeoutExpired("test-cli", 3)
+        last = subprocess.TimeoutExpired("test-cli", 3)
+        process.wait.side_effect = [first, last]
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            self.stop_process(process)
+        self.assertIs(raised.exception, last)
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_args_list, [call(timeout=3), call(timeout=3)])
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_closes_pipes_of_exited_child(self):
+        process = Mock()
+        process.poll.return_value = 0
+        self.stop_process(process)
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+        process.wait.assert_not_called()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_closes_stderr_if_stdout_close_fails(self):
+        process = Mock()
+        process.poll.return_value = 0
+        process.stdout.close.side_effect = OSError("close failed")
+        with self.assertRaisesRegex(OSError, "close failed"):
+            self.stop_process(process)
+        process.stderr.close.assert_called_once()
+
+    def test_process_cleanup_closes_pipes_if_termination_fails(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.terminate.side_effect = OSError("terminate failed")
+        with self.assertRaisesRegex(OSError, "terminate failed"):
+            self.stop_process(process)
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        process.wait.assert_not_called()
 
     def test_process_cleanup_reaps_real_sleeping_child(self):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
@@ -588,9 +619,7 @@ class Workspace(unittest.TestCase):
             self.assertEqual(self.store.file(output)["size"], 5)
             self.assertEqual(self.store.stats()["active_sessions"], 0)
         finally:
-            if process.poll() is None:
-                process.kill()
-                process.communicate()
+            self.stop_process(process)
 
     @unittest.skipIf(os.name == "nt", "POSIX SIGKILL")
     def test_killed_watcher_remains_active_until_user_confirms_stop(self):
@@ -615,9 +644,7 @@ class Workspace(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertEqual(self.store.stats()["active_sessions"], 0)
         finally:
-            if process.poll() is None:
-                process.kill()
-                process.communicate()
+            self.stop_process(process)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux native backend")
     def test_native_wrapper_retains_transient_event_without_inventing_size(self):

@@ -16,8 +16,13 @@ agcc = "agentgc.cli:main"
 [project.urls]
 Repository = "https://github.com/LIghtJUNction/AgentGC"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["agentgc"]
+namespaces = false
 
 [tool.setuptools.package-data]
 agentgc = ["skills/agentgc/*.md"]
