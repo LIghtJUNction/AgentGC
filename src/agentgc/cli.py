@@ -16,6 +16,7 @@ from .cleanup import mark, plan, quarantine_one, recover, restore
 from .paths import Scope, SafetyError, absolute, default_home, no_links
 from .store import LABELS, Store
 from .tracker import scan_once, track
+from .watch_control import WatchControl, request_stop
 
 
 def positive(value: str) -> float:
@@ -46,6 +47,9 @@ def parser() -> argparse.ArgumentParser:
                 cmd.add_argument("command", nargs=argparse.REMAINDER, help="-- executable [arguments]")
             else:
                 cmd.add_argument("--duration", type=positive, help="stop after this many seconds")
+                cmd.add_argument("--control", help="unique cooperative control name; default duration: 3600 seconds")
+    cmd = sub.add_parser("watch-stop", help="request a controlled watcher to stop and perform its final scan")
+    cmd.add_argument("control", help="control name used with watch --control")
     for name in ("list", "search"):
         cmd = sub.add_parser(name, help="query the file index")
         if name == "search":
@@ -119,9 +123,15 @@ def execute(args, store: Store) -> tuple[object, int]:
             command = args.command[1:] if args.command[:1] == ["--"] else args.command
             if not command:
                 raise SafetyError("run requires -- executable [arguments]")
+        control = WatchControl(store, args.control) if action == "watch" and args.control else None
+        duration = getattr(args, "duration", None)
+        if control and duration is None:
+            duration = 3600
         code, sid = track(store, scope, args.agent, args.backend, args.interval, args.reconcile,
-                          command, getattr(args, "duration", None), args.tag_files)
+                          command, duration, args.tag_files, control)
         return {"session": sid, "exit_code": code}, code
+    if action == "watch-stop":
+        return request_stop(store, args.control), 0
     if action in ("list", "search"):
         return store.list_files(getattr(args, "query", ""), args.sort, args.label, args.all,
                                  args.limit, args.offset, args.session), 0

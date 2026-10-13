@@ -54,8 +54,14 @@ agcc run --agent assistant --root . -- your-agent-command
 agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-command
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
+agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
+agcc watch-stop task-UNIQUE_ID
 agcc scan --root .
 ```
+
+`watch --control` 适合 Agent 自行启动后台跟踪：每次使用新的控制名，基线完成后在 `<状态目录>/watches/<控制名>/ready.json` 写入会话 ID 和 PID。通过 `agcc --json doctor` 查询状态目录。开始修改前先读取就绪记录并核对会话仍在运行；后台进程已经启动不代表基线完成。控制名只允许 1–64 个 ASCII 字母、数字、下划线或连字符，不能复用。
+
+`watch-stop` 只发送协作式停止请求，不发送 PID 信号，也不会直接关闭会话记录。收到请求后 watcher 做最终扫描并自行结束；Agent 必须等待对应会话离开 `running`。受控 watcher 未指定时长时默认最多运行 3600 秒，不是永久后台服务。就绪超时、跟踪提前结束或扫描缺口必须明确报告；停止跟踪不代表所有业务写入者都已停止，也不授权清理。
 
 `run` 保留子进程的输入、输出和退出码，不使用额外的 shell。命令中需要 shell 运算符时，应显式调用 shell。会话信息写入 stderr，不混入子进程 stdout。包装器把 `AGENTGC_SESSION` 和 `AGENTGC_HOME` 传给子进程。
 
@@ -156,7 +162,13 @@ agcc prune --days 30 --apply
 ```sh
 agcc skill
 agcc skill --install /path/to/your-agent/skills
+# 用户级全局技能目录（Pi 支持）
+agcc skill --install ~/.agents/skills
 ```
+
+全局技能要求 Agent 在本地修改代码或文档、构建、测试、安装依赖、运行脚本和生成产物前主动跟踪，无需用户专门提到清理。只读问答和纯远程操作无需本地 watcher。已有覆盖本任务目录的可信跟踪可复用；当前会话直接编辑文件时，可自行启动 `watch --control`，等待就绪后再写入，结束时请求停止、等待最终扫描并检查本会话的历史与产物。不能把一次事后扫描说成完整跟踪。
+
+Pi 安装后用 `/reload` 刷新技能，或显式输入 `/skill:agentgc`。技能是 Agent 的行为指引，不是自动执行钩子：不能保证所有客户端或模型都遵守，也不会开启全盘常驻监控。已有技能不会覆盖，更新安装副本前应保存自定义内容；仓库与安装副本不会自动同步。主动跟踪不等于主动删除，清理仍需用途与引用检查、用户许可和预览。
 
 安装位置为 `<目标>/agentgc/SKILL.md`，已有文件不会被覆盖。技能规范与 CLI 一起打包，源文件在 `src/agentgc/skills/agentgc/SKILL.md`。Skill 要求 Agent 先确认用途、引用和用户许可，不能自行把“可能是垃圾”升级成清理许可。
 

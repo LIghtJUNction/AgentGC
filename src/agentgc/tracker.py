@@ -14,6 +14,7 @@ from .native import make_backend
 from .paths import Scope, SafetyError, regular, signature
 from .store import Store
 from .tags import write_tag
+from .watch_control import WatchControl
 
 
 class Tracker:
@@ -105,7 +106,7 @@ class Tracker:
 
 def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interval: float = 1,
           reconcile: float = 60, command: list[str] | None = None, duration: float | None = None,
-          tag_files: bool = False) -> tuple[int, str]:
+          tag_files: bool = False, control: WatchControl | None = None) -> tuple[int, str]:
     if interval < 0.1 or reconcile < interval or (duration is not None and duration <= 0):
         raise SafetyError("interval must be >= 0.1; reconcile >= interval; duration > 0")
     observer, warning = make_backend(scope, backend)
@@ -139,8 +140,12 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
             env = dict(os.environ, AGENTGC_SESSION=sid, AGENTGC_HOME=str(store.home))
             process = subprocess.Popen(command, env=env)  # No shell; preserve argv and exit status.
         print(f"agcc: session {sid}; backend {observer.name if observer else 'poll'}", file=sys.stderr)
+        if control:
+            control.ready(sid)
         start = last_scan = last_beat = time.monotonic()
         while not interrupted:
+            if control and control.stopping():
+                break
             if process is not None and process.poll() is not None:
                 code = process.returncode
                 break

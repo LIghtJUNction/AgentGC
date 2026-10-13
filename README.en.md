@@ -54,8 +54,14 @@ agcc run --agent assistant --root . -- your-agent-command
 agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-command
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
+agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
+agcc watch-stop task-UNIQUE_ID
 agcc scan --root .
 ```
+
+`watch --control` lets an agent manage its own background watcher. Use a new control name for every task. After the baseline succeeds, it writes the session ID and PID to `<state-home>/watches/<control>/ready.json`. Find the state directory with `agcc --json doctor`. Read readiness and confirm the session is still running before editing; a launched background process does not prove the baseline is ready. Control names allow 1–64 ASCII letters, digits, underscores, or hyphens and cannot be reused.
+
+`watch-stop` only requests a cooperative stop. It does not signal a PID or directly close a session record. The watcher performs its final scan and ends itself; wait for that session to leave `running`. Controlled watchers default to a 3600-second limit when no duration is supplied, not a permanent background service. Report readiness timeouts, early exits, and tracking gaps. Stopping a watcher does not prove that application writers have stopped or authorize cleanup.
 
 `run` preserves the child's input, output, and exit code without adding a shell. If a command needs shell operators, invoke a shell explicitly. Session information goes to stderr, not the child's stdout. The wrapper passes `AGENTGC_SESSION` and `AGENTGC_HOME` to the child.
 
@@ -156,7 +162,13 @@ agcc prune --days 30 --apply
 ```sh
 agcc skill
 agcc skill --install /path/to/your-agent/skills
+# User-level global skills directory (supported by Pi)
+agcc skill --install ~/.agents/skills
 ```
+
+The global skill instructs agents to proactively track before local code or document edits, builds, tests, dependency installs, scripts, and artifact generation, even without a cleanup request. Read-only questions and remote-only work do not need a local watcher. Reuse known live tracking that covers the task's roots. For direct file-tool edits in the current session, start `watch --control`, wait for readiness, then write. At completion, request a stop, wait for the final scan, and inspect session history and outputs. A post-task snapshot is not a substitute for tracking.
+
+In Pi, run `/reload` after installation, or invoke `/skill:agentgc` explicitly. Skills are agent instructions, not automatic execution hooks: they cannot guarantee compliance by every client or model and do not enable persistent whole-system monitoring. Existing skills are not overwritten; preserve customizations before updating an installed copy. Repository and installed copies do not synchronize automatically. Proactive tracking does not mean automatic deletion; cleanup still requires use and reference checks, user permission, and a preview.
 
 The installed path is `<destination>/agentgc/SKILL.md`; existing files are not overwritten. The skill ships with the CLI, with its source at `src/agentgc/skills/agentgc/SKILL.md`. It requires the agent to check use, references, and user permission first; suspected clutter must not be treated as authorized for cleanup.
 

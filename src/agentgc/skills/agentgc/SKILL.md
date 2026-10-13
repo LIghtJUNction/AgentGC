@@ -1,25 +1,69 @@
 ---
 name: agentgc
-description: Track files created or changed during agent work. Search the local index, preserve useful results, and prepare a reviewed, reversible cleanup. Use before long-running agent jobs or when investigating workspace leftovers.
+description: Proactively track local file changes before editing code or documents, running builds, tests, installs, scripts, or generating artifacts, even when the user does not mention tracking or cleanup. Use for workspace leftovers too. Preserve useful outputs and preview reversible cleanup; never treat observed files as automatically disposable.
 ---
 
 # AgentGC
 
 The program is `agcc`. The package is `agentgc`.
 
+## Proactive default
+
+Use this skill before local work that writes files, not only when the user asks
+about garbage. This includes small source/document edits, builds, tests,
+package installations, scripts, and generated deliverables. Read-only questions,
+code inspection, and remote-only work do not need a local watcher.
+
+Inspect `agcc --version` and `agcc --json sessions` first. If a known live
+wrapper already covers the task's roots and state directory, reuse it rather
+than starting nested watchers. `AGENTGC_SESSION` is a hint, not proof that a
+wrapper is still alive. Do not stop watchers belonging to other tasks.
+
+Tracking is the default workflow, not permission to scan the whole home
+folder or clean anything. Select the project and known output directories.
+If the command is unavailable, report the tracking gap; do not silently
+install software or claim that tracking happened. A scan after the task is
+only a snapshot and cannot reconstruct missed changes.
+
 ## Start tracking
 
-Wrap a command before it starts:
+For a command, wrap it before it starts:
 
 ```sh
 agcc run --agent assistant --root . -- your-agent-command
 ```
 
-For an already-running tool, ask the user to start `agcc watch --root .` in
-another terminal. Do not promise monitoring after the watcher stops.
-Add each output or temporary directory with another `--root`. Files outside
-those roots are not tracked. Use `--exclude` only for paths the user agrees
-to leave untracked. Add `--tag-files` only when file metadata writes are allowed.
+For edits made by the current agent's file tools, start a controlled watcher
+yourself through the execution tool. Do not make the user open another terminal
+when background execution is available. On POSIX shells, for example:
+
+```sh
+control="task-$(python -c 'import uuid; print(uuid.uuid4().hex)')"
+log=$(mktemp "${TMPDIR:-/tmp}/agentgc-watch.XXXXXX")
+nohup agcc watch --root "$PWD" --agent assistant --control "$control" \
+  --duration 3600 > "$log" 2>&1 < /dev/null &
+```
+
+Retain the control name, log path, and state directory in task context. Use the
+same `--home` for every related command if overriding the default. A controlled
+watcher publishes `<state-home>/watches/<control>/ready.json` **after** the
+baseline succeeds. Obtain the state-home from `agcc --json doctor`. Read and
+parse readiness, then check that its session is running before writing files.
+Wait with a short bounded timeout (for example 10 seconds); if readiness fails,
+inspect the log and report the gap. Do not treat a background PID or a running
+session row alone as proof that the baseline has completed.
+
+Controlled watchers default to a 3600-second limit. Choose an appropriate
+explicit duration; if it expires mid-task, report the gap and start a new
+watcher before more writes. Never reuse a control name. On Windows or an
+execution tool without persistent background jobs, use its supported background
+mechanism with `watch --control`, or wrap writing commands with `run`. If neither
+can cover direct file edits, explain the limitation rather than promising coverage.
+
+Add each known output or temporary directory with another `--root`. Files
+outside those roots are not tracked. Do not follow links into unselected
+folders. Use `--exclude` only for paths the user agrees to leave untracked.
+Add `--tag-files` only when file metadata writes are allowed.
 
 `AGENTGC_SESSION` and `AGENTGC_HOME` are passed to the child. Do not send the
 index, file paths, notes, session IDs, or command output to a remote service
@@ -44,6 +88,30 @@ this session was active. It does NOT prove that this agent or its child
 process wrote it. A filesystem event does not identify its writer.
 A `gap` or an `*-unresolved` event means some details are missing.
 Do not fill in missing source, size, or history from guesses.
+
+## Finish each writing task
+
+Request a stop only for the watcher you started:
+
+```sh
+agcc --json watch-stop "$control"
+agcc --json sessions
+agcc --json list --session SESSION_ID --sort time --limit 50
+agcc --json history --session SESSION_ID --limit 50
+```
+
+`watch-stop` is a cooperative request, not immediate completion and not cleanup
+permission. Wait for that session to finish its final scan and leave `running`
+with a short bounded timeout. If it fails, is interrupted, or remains running,
+report the status and any gaps. Do not call `end-session` to manufacture success.
+A wrapper used with `run` ends its own tracking; it does not need `watch-stop`.
+
+Inspect session history to distinguish baseline observations from changes;
+`list --session` may include pre-existing files seen at baseline. Preserve
+known deliverables with `keep`. Mark understood intermediate outputs
+`temporary` with a note; leave uncertain files as `review`. Do not relabel
+every observed file. Briefly report whether tracking was active, any gaps,
+and relevant leftover candidates. Do not quarantine automatically.
 
 ## Preserve and classify
 

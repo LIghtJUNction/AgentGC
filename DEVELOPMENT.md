@@ -6,6 +6,7 @@
 `store.py` owns the SQLite schema, transactions, sessions, queries, and events.
 `native.py` implements Linux inotify with the system C library.
 `tracker.py` records observations and runs the child command.
+`watch_control.py` provides task-scoped readiness and cooperative stop requests.
 `tags.py` writes optional platform metadata. Tags are never trusted input.
 `cleanup.py` handles review, quarantine, restore, and recovery records.
 `cli.py` parses commands and formats output. The bundled skill is package data.
@@ -59,6 +60,14 @@ The SQLite store is local, private application state. It is not a security
 boundary against another process with the same user permissions. Read-only
 queries are safe during tracking. Cleanup requires stopped writers and a
 user review. Sessions in separate state directories cannot guard each other.
+
+Controlled watchers publish readiness only after a successful baseline. Their
+unique control directories live beneath the private state home and cannot be
+reused. Stop requests never signal recorded PIDs or close session records:
+only the watcher ends its session after final reconciliation. A stop request
+is not evidence that application writers have stopped. Reject linked control
+paths and malformed readiness records. Readiness timeouts and early watcher
+exits are tracking gaps, not permission to bypass cleanup protections.
 
 An unchanged scan writes scan tokens but creates no file change events.
 A failed scan must not treat unreadable files as deleted. Native queues
