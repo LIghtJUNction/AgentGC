@@ -113,6 +113,26 @@ Time sorting uses the most recently observed change. Activity is the cumulative 
 
 Add `--tag-files` to `run`, `watch`, or `mark` to write file tags. Tags contain small index references, sessions, and classifications, not file contents. They may be unsupported, stale, copied, or tampered with, and **cannot authorize cleanup**. SQLite remains the authoritative record.
 
+## Directory pressure and proactive marking
+
+```sh
+agcc --json pressure --root .
+agcc --json pressure --root . --root /path/to/cache --threshold build=1024 --apply
+agcc --json reviews
+```
+
+`pressure` inventories metadata under explicit roots with defaults of 200000 entries and 30 seconds. Override with `--max-entries` and `--max-seconds`. It does not read content, follow links, or cross filesystems; select each filesystem separately. Budget, permission, and mount gaps produce exit code 1 and incomplete lower-bound totals. Sizes are logical bytes; nested candidates overlap and hard links can repeat. Do not sum all candidates as unique disk usage.
+
+Any candidate with >=100000 files also flags attention (`--file-threshold` overrides it), catching small-file test explosions below byte thresholds. Common package caches, tool installations, databases, and model stores are review candidates too. Explicitly select separately mounted stores such as `/var/cache/pacman/pkg`.
+
+Review defaults: `target/build/dist/.next` 512 MiB; `node_modules/.venv/venv` and common caches 1 GiB; `log/logs` 256 MiB; quarantine 1 MiB; protected `Backups/docker/containers` storage 5 GiB. Filesystem usage >=80% or free space <5 GiB flags attention; >=90% or <2 GiB is urgent. These are adjustable heuristics, not industry standards. Use `--threshold CATEGORY=MIB`; see `agcc pressure --help` for categories.
+
+Exceeding a threshold is never cleanup permission. Default mode is preview. `--apply` saves separate SQLite directory `review` notes, never changes file labels or authorizes cleanup. `reviews` are historical observations: remeasure before acting. Protect databases, container volumes, live dependencies, and unique backups. Directory names do not prove their purpose.
+
+The skill requires tracking before writes, classifying outputs at completion, and checking growth after builds, tests, installs, and downloads. Known intermediate outputs should be marked even below thresholds. Growth >=256 MiB AND >=25% between reliable measurements, or closed logs older than 14 days, merits attention; those two checks are agent guidance, not automatic CLI calculations.
+
+An explicit system-wide request expands discovery beyond the current project to authorized local filesystems and common stores. Runtime roots `/proc`, `/sys`, `/dev`, `/run` remain excluded. Do not elevate privileges or hide unreadable or unfinished scopes. This is not whole-system real-time monitoring or proof of writer identity.
+
 ## Cleanup protections
 
 A file being created or changed during agent work does not mean it can be deleted. Neither `temporary` nor `review` grants cleanup permission.

@@ -15,6 +15,7 @@ from . import __version__
 from .cleanup import mark, plan, quarantine_one, recover, restore
 from .paths import Scope, SafetyError, absolute, default_home, no_links
 from .store import LABELS, Store
+from .pressure import DEFAULTS, MIB, inventory, reviews, save_reviews
 from .tracker import scan_once, track
 from .watch_control import WatchControl, request_stop
 
@@ -85,6 +86,15 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--confirm-stopped", action="store_true")
     sub.add_parser("stats", help="show indexed file counts and logical bytes")
     sub.add_parser("doctor", help="check index health and recovery state")
+    cmd = sub.add_parser("pressure", help="bounded directory size checks; thresholds flag review, never cleanup")
+    cmd.add_argument("--root", action="append", required=True, type=Path)
+    cmd.add_argument("--threshold", action="append", default=[], metavar="CATEGORY=MIB",
+                     help="override review threshold in MiB (build, dependencies, cache, logs, quarantine, protected)")
+    cmd.add_argument("--max-entries", type=int, default=200000)
+    cmd.add_argument("--file-threshold", type=int, default=100000, help="review a candidate directory with this many files")
+    cmd.add_argument("--max-seconds", type=positive, default=30)
+    cmd.add_argument("--apply", action="store_true", help="save attention notes only, not file cleanup permission")
+    sub.add_parser("reviews", help="list historical directory attention notes; remeasure before acting")
     cmd = sub.add_parser("prune", help="preview or prune old events from completed sessions")
     cmd.add_argument("--days", type=positive, default=30)
     cmd.add_argument("--apply", action="store_true")
@@ -187,6 +197,26 @@ def execute(args, store: Store) -> tuple[object, int]:
         return {"integrity": check, "home": str(store.home), "state_bytes": state_bytes,
                 "native_backend": "inotify" if sys.platform.startswith("linux") else "not implemented; polling available",
                 "pending_recovery": recover(store), **store.stats()}, 0 if check == "ok" else 1
+    if action == "reviews":
+        return reviews(store), 0
+    if action == "pressure":
+        limits = {}
+        for value in args.threshold:
+            category, sep, amount = value.partition("=")
+            if not sep or category not in DEFAULTS:
+                raise SafetyError("threshold must be a known CATEGORY=MIB")
+            try:
+                mib = positive(amount)
+            except argparse.ArgumentTypeError as exc:
+                raise SafetyError(str(exc)) from exc
+            if mib > (2**63 - 1) / MIB:
+                raise SafetyError("threshold exceeds supported byte range")
+            limits[category] = int(mib * MIB)
+        result = inventory(args.root, limits, args.max_entries, args.max_seconds, store.home, args.file_threshold)
+        if args.apply:
+            result["saved_reviews"] = save_reviews(store, result)
+            result["mode"] = "mark-review"
+        return result, 0 if result["complete"] else 1
     if action == "prune":
         cutoff = time.time() - args.days * 86400
         condition = "at<? AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status<>'running'))"

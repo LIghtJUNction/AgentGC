@@ -10,6 +10,12 @@
 `tags.py` writes optional platform metadata. Tags are never trusted input.
 `cleanup.py` handles review, quarantine, restore, and recovery records.
 `cli.py` parses commands and formats output. The bundled skill is package data.
+`pressure.py` inventories directory growth candidates with explicit roots and
+entry/time/depth budgets. Optional SQLite `directory_reviews` records are
+historical attention notes, separate from file labels and cleanup authorization.
+Thresholds never create disposable reviews. Incomplete byte counts are lower
+bounds; nested candidates and hard links may overlap. Skip symlinks, runtime
+pseudo-filesystems, and unselected mount boundaries; do not read file contents.
 
 The package needs Python 3.11 or later. Runtime dependencies: none.
 Build dependency: setuptools. The CLI is `agcc`, not `agentgc`.

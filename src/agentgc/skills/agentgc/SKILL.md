@@ -1,6 +1,6 @@
 ---
 name: agentgc
-description: Proactively track local file changes before editing code or documents, running builds, tests, installs, scripts, or generating artifacts, even when the user does not mention tracking or cleanup. Use for workspace leftovers too. Preserve useful outputs and preview reversible cleanup; never treat observed files as automatically disposable.
+description: Use proactively before editing code or documents and BEFORE any local file-writing work (even a tiny code/doc edit, build, test, dependency install, script, download or generated artifact) and AGAIN at task completion to classify outputs and flag disk growth. Also use for disk-space complaints, system-wide marking, cleanup, and swelling target, node_modules, .venv, build/dist, caches or logs, even without an explicit tracking request. Track first, preserve deliverables, mark uncertain size hotspots for review; thresholds never authorize deletion. Skip read-only explanations and remote-only operations.
 ---
 
 # AgentGC
@@ -112,6 +112,57 @@ known deliverables with `keep`. Mark understood intermediate outputs
 `temporary` with a note; leave uncertain files as `review`. Do not relabel
 every observed file. Briefly report whether tracking was active, any gaps,
 and relevant leftover candidates. Do not quarantine automatically.
+
+## Proactive pressure checks and marking
+
+At task completion, after builds/tests/installs/downloads, and when a user mentions
+disk pressure or growing folders, check the selected output and cache roots even
+if the user never says “mark”. Classify known outputs regardless of size: `keep`
+for deliverables, `temporary` for understood intermediate files, `review` when
+purpose is uncertain. Thresholds add attention; they do not replace classification.
+Use changed-output roots and recent directory reviews to keep routine checks small;
+do not rescan the entire system after every edit or repeat unchanged warnings.
+Report newly observed, worsened, or unresolved hotspots; keep known stable warnings
+in the index. A whole-system pass requires the user's explicit scope.
+
+```sh
+agcc --json pressure --root . --root /known/cache --max-seconds 30
+agcc --json pressure --root . --threshold build=1024 --apply
+agcc --json reviews
+```
+
+Defaults are review thresholds, not deletion rules:
+- `target`, `build`, `dist`, `.next`: 512 MiB per directory.
+- `node_modules`, `.venv`, `venv`: 1 GiB per directory. These may be active dependencies.
+- `.cache`, `cache`, Python/test/type-checker caches: 1 GiB per directory.
+- `log`, `logs`: 256 MiB per directory. Closed logs older than 14 days deserve a retention review, not automatic deletion of open logs.
+- `.agentgc-quarantine`: 1 MiB prompts recovery/retention review; never delete payloads directly.
+- `Backups`, `docker`, `containers`: 5 GiB prompts protected-storage review; backups, images and volumes are not disposable by name.
+- Any candidate directory with >=100000 files: review small-file proliferation even below byte thresholds (`--file-threshold` overrides it).
+- Filesystem usage >=80% or free space <5 GiB: flag risk. >=90% or <2 GiB: urgent attention. Also compare expected build size against actual headroom.
+
+Where reliable before/after measurements exist, flag growth of at least 256 MiB
+AND 25% during a task even below the absolute threshold. Do not fabricate a
+baseline; directory mtimes are not file age or proof of inactivity. These growth
+and log-age checks are agent guidance, not currently automatic CLI calculations.
+
+`pressure` only reads metadata, does not follow links or cross device boundaries,
+and has entry/time budgets. Repeat `--root` for each selected filesystem. It reports
+logical bytes; hard links and nested candidates can overlap. Incomplete totals
+are lower bounds. It does not prove which process wrote anything. `--apply` saves
+separate directory `review` notes in SQLite, never changes per-file labels or
+creates `disposable` permission. `reviews` are historical observations; remeasure
+before acting. Size alone cannot distinguish cache from business data.
+
+For an explicit system-wide request, discover across authorized local filesystems
+rather than silently limiting to the current project. Start with metadata-only,
+bounded directory checks; select home/project stores, `/var/cache`, `/var/log`,
+`/var/lib`, `/opt`, `/usr/local`, `/tmp` as appropriate. State what was actually
+covered. Do not scan `/proc`, `/sys`, `/dev`, `/run`, follow links into other roots,
+read file contents, elevate privileges, or claim completeness when permissions,
+mount boundaries or budgets caused gaps. System inventory is not a whole-system
+watcher. Prefer package-manager cleanup tools for managed caches; preserve live
+volumes, databases, active dependencies, unique backups and recovery records.
 
 ## Preserve and classify
 
