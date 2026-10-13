@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_file ON events(file_id, id DESC);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, id DESC);
+CREATE INDEX IF NOT EXISTS events_file_session ON events(file_id, session_id);
 CREATE INDEX IF NOT EXISTS events_path ON events(path, id DESC);
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 CREATE TABLE IF NOT EXISTS quarantine (

@@ -131,6 +131,32 @@ class Workspace(unittest.TestCase):
         self.scan()
         self.assertEqual(len(self.store.list_files(session=first)), 1)
 
+    def test_session_membership_uses_composite_index_in_existing_store(self):
+        matching = self.file("matching")
+        absent = self.file("absent")
+        baseline = self.scan()["session"]
+        target = self.store.start_session("target", self.scope.roots, "poll")
+        match_id = self.store.file(matching)["id"]
+        absent_id = self.store.file(absent)["id"]
+        with self.store.transaction():
+            for _ in range(500):
+                self.store.event(str(absent), "modified", "test", baseline, absent_id)
+            self.store.event(str(matching), "modified", "test", target, match_id)
+        self.store.end_session(target, 0)
+        # Simulate an older schema-v1 database, then reopen to check additive upgrade.
+        self.store.db.execute("DROP INDEX events_file_session")
+        self.store.close()
+        self.store = Store(self.home)
+        self.assertEqual([r["path"] for r in self.store.list_files(session=target)], [str(matching)])
+        self.assertEqual(self.store.list_files(session=target, offset=1), [])
+        plan_rows = self.store.db.execute(
+            "EXPLAIN QUERY PLAN SELECT f.id FROM files f WHERE EXISTS "
+            "(SELECT 1 FROM events e WHERE e.file_id=f.id AND e.session_id=?)", (target,)
+        )
+        details = [r["detail"] for r in plan_rows]
+        self.assertTrue(any("events_file_session" in d and "file_id=?" in d and "session_id=?" in d
+                            for d in details), details)
+
     def test_overlap_roots_are_deduplicated(self):
         nested = self.root / "inner"
         nested.mkdir()

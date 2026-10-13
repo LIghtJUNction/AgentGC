@@ -97,6 +97,10 @@ class Inotify:
                     rescan = overflow = True
         return notices, rescan, overflow
 
+    def pending(self) -> bool:
+        """Check for another batch, including batches containing only directory events."""
+        return bool(select.select([self.fd], [], [], 0)[0])
+
     def close(self) -> None:
         if self.fd >= 0:
             os.close(self.fd)

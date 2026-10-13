@@ -118,6 +118,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
     tracker = Tracker(store, scope, sid, tag_files)
     process: subprocess.Popen | None = None
     code, interrupted, pending_scan = 0, False, False
+    final_failed = False
     old_handlers: dict = {}
 
     def stop(signum, _frame):
@@ -208,21 +209,47 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
     finally:
         try:
             if observer:
-                notices, _, overflow = observer.read(0)
-                with store.transaction():
-                    for path, kind in notices:
-                        tracker.sync(path)
-                        if not path.exists():
-                            store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
-                    if overflow:
-                        tracker.gap("Queue overflow at session end")
+                # Each read is bounded. Drain queued batches, but do not let an
+                # unrelated continuing writer postpone shutdown indefinitely.
+                deadline = time.monotonic() + 1
+                try:
+                    for batch in range(32):
+                        notices, _, overflow = observer.read(0)
+                        with store.transaction():
+                            for path, kind in notices:
+                                tracker.sync(path)
+                                if not path.exists():
+                                    store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
+                            if tracker.errors:
+                                tracker.gap("Incomplete final event read: " + "; ".join(tracker.errors))
+                                tracker.errors = []
+                                final_failed = True
+                            if overflow:
+                                tracker.gap("Queue overflow at session end")
+                        if not observer.pending():
+                            break
+                        if batch == 31 or time.monotonic() >= deadline:
+                            tracker.gap("Native event drain limit reached at session end; queued events may be lost")
+                            final_failed = True
+                            break
+                except OSError as exc:
+                    tracker.gap(f"Final native event read failed: {exc}")
+                    final_failed = True
+            # Even a failed native read must not suppress reconciliation.
             tracker.scan()
+            final_failed |= bool(tracker.errors)
+        except BaseException:
+            final_failed = True
+            raise
         finally:
             if observer:
                 observer.close()
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
-            store.end_session(sid, code, "interrupted" if interrupted else "finished" if code == 0 else "failed")
+            if final_failed and command is None and not interrupted:
+                code = 1
+            store.end_session(sid, code, "interrupted" if interrupted else
+                              "failed" if final_failed or code != 0 else "finished")
     return (128 - code if code < 0 else code), sid
 
 
