@@ -1,5 +1,7 @@
 # AgentGC
 
+[中文](README.md) | [English](README.en.md)
+
 追踪 AI Agent 创建和修改的文件，让持续运行的 Agent 留下的产物可查、可管、可清理。
 
 项目名 **agentgc**，命令行工具名 **agcc**。产品形态是 **Skills + CLI**。
@@ -169,7 +171,3 @@ python tools/benchmark.py --files 5000
 开发时不安装也可运行：`PYTHONPATH=src python -m agentgc --help`（该写法适用于 POSIX shell）。CI 覆盖 Linux、macOS、Windows 的 Python 3.11 和 3.13。平台专用测试会明确跳过；CI 配置存在不代表尚未运行的平台已经验证。
 
 测试覆盖文件变化、查询、标签失效、内容摘要检查、链接保护、Git 保护、会话冲突、隔离恢复、操作中断、命令退出码、真实子进程、Linux 原生事件和文件标记。复现方法及实现边界见 [DEVELOPMENT.md](DEVELOPMENT.md)。
-
-## 下一步
-
-继续以实际需求和测试为准：进程级归属、macOS/Windows 原生事件、更完整的崩溃恢复、跨路径身份、内容历史和永久清理策略均未实现。CPU、内存占用限制也不属于当前文件管理实现的能力。
