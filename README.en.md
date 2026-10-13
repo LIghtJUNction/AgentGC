@@ -93,15 +93,17 @@ Human actions and other processes in a shared directory may also be observed. Th
 
 ## Output format
 
-Default output is compact Markdown: a command heading, summary and bullet rows, rather than indented JSON. Sizes use readable units; routine summaries omit internal hashes/signatures and repeated measurements. Ordinary lists display at most 20 returned rows with explicit omission counts; query limits and scope are unchanged. `list/search` show the next offset; preserve your filters. Commands without offset support, such as `history`, can use `--json` for all returned rows. JSON is still subject to query limits, not the entire index.
+Default output is compact Markdown: a command heading, summary and bullet rows, rather than indented JSON. Sizes use readable units; routine summaries omit internal hashes/signatures and repeated measurements. Ordinary lists default to 20 returned rows with explicit omission counts. `--rows N` changes the display cap; `--details` shows all returned Markdown rows (not every raw field); neither expands query limits. `list/search/history` show the next offset; preserve your filters. Returned running sessions and uncertain/active automatic marks are prioritized. JSON is still subject to query limits, not the entire index.
 
 ```sh
 agcc list --sort size --limit 20
-agcc sync --dry-run
+agcc history path/to/file --limit 20 --offset 20
+agcc --rows 5 sessions
+agcc --details sync --dry-run           # includes unchanged observations
 agcc --json list --sort size --limit 100   # machine parsing and raw returned records
 ```
 
-JSON payloads remain unchanged; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. Tracking gaps absent from the result are reported as unavailable, never inferred as zero from successful exit.
+JSON payloads remain unchanged; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. The summary reads local session status, gap counts and retained unresolved-event counts; read failures are explicitly unavailable. Zero counts do not prove complete history; successful child exit does not imply gap-free tracking. Filesystem risks, GC refusals, recovery and gap details bypass `--rows`.
 
 ## Queries and labels
 
@@ -121,7 +123,7 @@ agcc mark path/to/scratch temporary --note "Not yet approved for cleanup"
 
 Time sorting uses the most recently observed change. Activity is the cumulative count of observed file-state changes, not read access. Byte totals in `stats` are the logical sizes of existing regular files; hard links may be counted more than once. These totals are not physical disk usage.
 
-`--json` and `--home` may appear before or after the subcommand. `list` and `history` return at most 100 records by default; the query limit is 10000. Search matches text and does not treat `%` or `_` in user input as wildcards.
+`--json`, `--home`, `--rows` and `--details` may appear before or after the subcommand; arguments after `run --` still belong to the child. `list` and `history` return at most 100 records by default; the query limit is 10000. Search matches text and does not treat `%` or `_` in user input as wildcards.
 
 Add `--tag-files` to `run`, `watch`, or `mark` to write file tags. Tags contain small index references, sessions, and classifications, not file contents. They may be unsupported, stale, copied, or tampered with, and **cannot authorize cleanup**. SQLite remains the authoritative record.
 

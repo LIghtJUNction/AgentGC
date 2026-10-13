@@ -75,15 +75,17 @@ ROW_FIELDS = {
 }
 
 
-def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
+def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISPLAY_LIMIT,
+             details: bool = False, tracking: dict | None = None) -> str:
     lines = [f"## {command}"]
+    display_limit = None if details else row_limit
 
     def summary(row, names):
         text = fields(row, names)
         if text:
             lines.append('- ' + text)
 
-    def rows(items, names, limit=DISPLAY_LIMIT, pagination=False):
+    def rows(items, names, limit=display_limit, pagination=False):
         shown = items if limit is None else items[:limit]
         for item in shown:
             if isinstance(item, dict):
@@ -96,7 +98,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
         if not items:
             lines.append('- None returned.')
         if omitted:
-            lines.append(f'- Showing {len(shown)}/{len(items)} returned rows; {omitted} omitted. Use `--json` for all returned fields/rows.')
+            lines.append(f'- Showing {len(shown)}/{len(items)} returned rows; {omitted} omitted. Use `--details` for all returned rows or `--json` for raw fields.')
         if pagination and items:
             lines.append(f'- Next page: same query/filters with `--offset {offset+len(shown)}`. A full page does not prove exhaustion.')
 
@@ -123,13 +125,13 @@ def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
         changes = row.get('changes', [])
         unknown = [r for r in observations if r.get('evaluation') == 'unknown']
         summary(row, ('mode','project','config','complete','entries'))
-        rows(row.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'))
+        rows(row.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'), limit=None)
         states = ', '.join(f'{k}={v}' for k,v in sorted(Counter(r.get('state','unknown') for r in observations).items()))
         lines.append(f'- Observations={len(observations)}; changes={len(changes)}; unknown={len(unknown)}; notifications={len(row.get("notifications", []))}. {states}')
         warnings(row)
-        focus = list(changes)
+        focus = list(observations if details else changes)
         existing = {(r.get('path'),r.get('rule_id')) for r in focus}
-        focus.extend(r for r in unknown if (r.get('path'),r.get('rule_id')) not in existing)
+        focus.extend(r for r in (changes if details else unknown) if (r.get('path'),r.get('rule_id')) not in existing)
         rows(focus, ('path','rule_id','state','evaluation','action'))
         if row.get('notifications'):
             lines.append('### Notifications')
@@ -138,12 +140,16 @@ def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
 
     if isinstance(data, list):
         if command == 'auto-marks':
-            lines.append(f'- Returned={len(data)}; unknown={sum(r.get("evaluation") == "unknown" for r in data)}.')
+            lines.append(f'- Returned={len(data)}; active={sum(r.get("state") == "active" for r in data)}; unknown={sum(r.get("evaluation") == "unknown" for r in data)}.')
+            data = sorted(data, key=lambda r: (r.get('evaluation') != 'unknown', r.get('state') != 'active'))
+        if command == 'sessions':
+            lines.append(f'- Returned={len(data)}; running={sum(r.get("status") == "running" for r in data)}; running sessions shown first.')
+            data = sorted(data, key=lambda r: r.get('status') != 'running')
         names = ROW_FIELDS.get(command)
         if names is None:
             names = tuple(dict.fromkeys(k for item in data if isinstance(item,dict) for k in item))
-        rows(data, names, limit=None if command in ('quarantine','recover') else DISPLAY_LIMIT,
-             pagination=command in ('list','search'))
+        rows(data, names, limit=None if command in ('quarantine','recover') else display_limit,
+             pagination=command in ('list','search','history'))
         if command in ('list','search','history'):
             lines.append('- Sources describe observations, not proven writers. Sizes are logical bytes.')
         if command in ('reviews','auto-marks'):
@@ -166,10 +172,10 @@ def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
         elif command == 'pressure':
             summary(data, ('mode','roots','complete','entries','saved_reviews'))
             warnings(data)
-            rows(data.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'))
+            rows(data.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'), limit=None)
             items = data.get('items', [])
             lines.append(f'- Candidates={len(items)}; attention={sum(bool(r.get("attention")) for r in items)}.')
-            rows(items, ('path','category','bytes','files','attention','reasons','complete'))
+            rows(sorted(items, key=lambda r: not r.get('attention')), ('path','category','bytes','files','attention','reasons','complete'))
             lines.append('- Logical bytes; nested candidates/hard links may overlap. Review is not cleanup permission.')
         elif command == 'rules':
             summary(data, ('project','config','fingerprint','path','note'))
@@ -194,7 +200,11 @@ def markdown(data, command: str = 'agcc', offset: int = 0) -> str:
             if command in ('stats', 'doctor', 'scan'):
                 lines.append('- Sizes are logical bytes, not unique physical disk usage.')
             if command in ('run', 'watch'):
-                lines.append('- Tracking gaps: unavailable in this result; query `history --session`/`sessions`.')
+                if tracking is None:
+                    lines.append('- Tracking gaps: unavailable; query `history --session`/`sessions`.')
+                else:
+                    summary(tracking, ('status','backend','gaps','retained_unresolved_events'))
+                    lines.append('- Recorded counts only; zero does not prove complete history or writer identity.')
             if command == 'watch-stop':
                 lines.append('- Stop requested only; wait for the session final scan to finish.')
             if 'automatic' in data:

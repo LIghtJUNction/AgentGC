@@ -73,12 +73,17 @@ without permission. Do not record API keys or secrets in agent names or notes.
 
 Prefer default compact Markdown for agent inspection to avoid dumping repetitive
 JSON fields. Use `--json` only for programmatic parsing, exact raw metadata, or
-all returned rows. Markdown shows at most 20 routine rows with explicit omission
-counts; retain original filters and paginate using the displayed offset. A page
-is not the whole index. GC/refusal details, recovery records and returned gaps
+raw metadata. Markdown defaults to 20 routine rows with explicit omission counts;
+use `--rows N` to reduce output, or `--details` for all returned Markdown rows.
+Details mode does not expand query limits or expose every raw field. Retain
+original filters and paginate list/search/history using the displayed offset.
+A page is not the whole index. GC/refusal details, recovery records and returned gaps
 are not presentation-capped. Unknown is not zero; child exit success does not
 prove gap-free tracking. `run` preserves child stdout/stderr; its own summary is
-on stderr. Never scrape Markdown as a machine API.
+on stderr. Run/watch summaries include local status, recorded gaps and retained
+unresolved-event counts when available; zero counts do not prove full history.
+Sessions prioritize returned running records, not all system sessions.
+Never scrape Markdown as a machine API.
 
 ```sh
 agcc list --sort size --limit 20

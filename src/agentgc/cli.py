@@ -20,7 +20,7 @@ from .tracker import scan_once, track
 from .watch_control import WatchControl, request_stop
 from .rules import load as load_rules, matches
 from .sync import reconcile, marks as automatic_marks
-from .output import markdown
+from .output import DISPLAY_LIMIT, markdown
 
 
 def positive(value: str) -> float:
@@ -30,11 +30,20 @@ def positive(value: str) -> float:
     return result
 
 
+def row_count(value: str) -> int:
+    result = int(value)
+    if not 1 <= result <= 10000:
+        raise argparse.ArgumentTypeError('must be between 1 and 10000')
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     app = argparse.ArgumentParser(prog="agcc", description="Track and manage files left by AI agents.")
     app.add_argument("--version", action="version", version=f"agcc {__version__}")
     app.add_argument("--home", type=Path, default=default_home(), help="private state directory (or AGENTGC_HOME)")
     app.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    app.add_argument('--rows', type=row_count, default=DISPLAY_LIMIT, help='Markdown display limit, not query limit (default: 20)')
+    app.add_argument('--details', action='store_true', help='show all returned Markdown rows; overrides --rows, not query limits')
     app.add_argument("--config", type=Path, help="explicit .agcc configuration")
     app.add_argument("--no-project-rules", action="store_true", help="ignore project configuration, keep core protections")
     sub = app.add_subparsers(dest="action", required=True)
@@ -70,6 +79,7 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("path", nargs="?")
     cmd.add_argument("--session")
     cmd.add_argument("--limit", type=int, default=100)
+    cmd.add_argument('--offset', type=int, default=0)
     cmd = sub.add_parser("mark", help="classify an indexed file")
     cmd.add_argument("path", type=Path)
     cmd.add_argument("label", choices=LABELS)
@@ -121,17 +131,33 @@ def parser() -> argparse.ArgumentParser:
     for cmd in sub.choices.values():
         cmd.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         cmd.add_argument("--home", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        cmd.add_argument('--rows', type=row_count, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        cmd.add_argument('--details', action='store_true', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         cmd.add_argument('--config', type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         cmd.add_argument('--no-project-rules', action='store_true', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     return app
 
 
-def emit(data, machine: bool, stream=None, command: str = 'agcc', offset: int = 0) -> None:
+def tracking_summary(store: Store, session: str) -> dict | None:
+    """Read retained evidence for presentation, never mutate the command payload."""
+    try:
+        row = store.db.execute('SELECT status,gaps,backend FROM sessions WHERE id=?', (session,)).fetchone()
+        if row is None:
+            return None
+        unresolved = store.db.execute("SELECT COUNT(*) FROM events WHERE session_id=? AND kind LIKE '%-unresolved'",
+                                      (session,)).fetchone()[0]
+        return {**dict(row), 'retained_unresolved_events': unresolved}
+    except sqlite3.Error:
+        return None  # unavailable is explicit; child exit codes must not change
+
+
+def emit(data, machine: bool, stream=None, command: str = 'agcc', offset: int = 0,
+         rows: int = DISPLAY_LIMIT, details: bool = False, tracking: dict | None = None) -> None:
     stream = stream or sys.stdout
     if machine:
         print(json.dumps(data, ensure_ascii=True, sort_keys=True), file=stream)
     else:
-        print(markdown(data, command, offset), end='', file=stream)
+        print(markdown(data, command, offset, row_limit=rows, details=details, tracking=tracking), end='', file=stream)
 
 
 def execute(args, store: Store) -> tuple[object, int]:
@@ -193,6 +219,8 @@ def execute(args, store: Store) -> tuple[object, int]:
     if action == "history":
         if not 1 <= args.limit <= 10000:
             raise SafetyError("limit must be between 1 and 10000")
+        if not 0 <= args.offset <= 2**63-1:
+            raise SafetyError('offset must be between 0 and 9223372036854775807')
         terms, values = [], []
         if args.path:
             terms.append("path=?")
@@ -201,7 +229,7 @@ def execute(args, store: Store) -> tuple[object, int]:
             terms.append("session_id=?")
             values.append(args.session)
         sql = "SELECT * FROM events" + (" WHERE " + " AND ".join(terms) if terms else "")
-        return [dict(r) for r in store.db.execute(sql + " ORDER BY id DESC LIMIT ?", (*values, args.limit))], 0
+        return [dict(r) for r in store.db.execute(sql + " ORDER BY id DESC LIMIT ? OFFSET ?", (*values, args.limit, args.offset))], 0
     if action == "mark":
         return mark(store, args.path, args.label, args.note, args.tag_files), 0
     if action == "gc":
@@ -316,8 +344,9 @@ def main(argv: list[str] | None = None) -> int:
         store = Store(args.home)
         result, code = execute(args, store)
         # Child stdout stays untouched, including when --json is used.
+        tracking = tracking_summary(store, result['session']) if not args.json and args.action in ('run','watch') else None
         emit(result, args.json, sys.stderr if args.action == "run" else sys.stdout,
-             args.action, getattr(args, 'offset', 0))
+             args.action, getattr(args, 'offset', 0), args.rows, args.details, tracking)
         return code
     except (OSError, ValueError, sqlite3.Error) as exc:
         if args.json:

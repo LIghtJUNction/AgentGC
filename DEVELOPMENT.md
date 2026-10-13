@@ -12,7 +12,12 @@
 `cli.py` parses commands and dispatches output. The bundled skill is package data.
 `output.py` renders compact, escaped Markdown without mutating command results.
 JSON retains original payloads and query limits. Routine rows have a visible
-20-row presentation cap; GC decisions, recovery and returned error/gap reasons
+20-row presentation cap, configurable with --rows or bypassed with --details.
+History supports bounded offset pagination. Running sessions and unknown/active
+automatic marks are prioritized only for display. Run/watch summaries read local
+retained session evidence without changing JSON payloads or child exit codes.
+Zero counts do not prove complete history. GC decisions, filesystem risks,
+recovery and returned error/gap reasons
 do not. Count unknown evaluations over all sync observations, not only changes.
 Formatting never manufactures gap-free tracking or changes child streams/codes.
 `pressure.py` inventories directory growth candidates with explicit roots and
