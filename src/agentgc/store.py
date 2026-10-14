@@ -52,15 +52,37 @@ CREATE TABLE IF NOT EXISTS quarantine (
 """
 
 
+class StoreNotReady(SafetyError):
+    """An existing database has not completed its first initialization."""
+
+
 class Store:
-    def __init__(self, home: Path):
+    def __init__(self, home: Path, *, read_only: bool = False):
         self.home = absolute(home)
-        self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not read_only:
+            self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         no_links(self.home)
         self.path = self.home / "index.sqlite3"
         for candidate in (self.path, *(Path(str(self.path) + suffix) for suffix in ("-wal", "-shm", "-journal"))):
             if candidate.exists() or candidate.is_symlink():
                 no_links(candidate)
+        if read_only:
+            if not self.path.exists():
+                raise FileNotFoundError(self.path)
+            self.db = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True,
+                                      timeout=0, isolation_level=None)
+            self.db.row_factory = sqlite3.Row
+            try:
+                self.db.execute("PRAGMA query_only=ON")
+                version = self.db.execute("PRAGMA user_version").fetchone()[0]
+                if version == 0:
+                    raise StoreNotReady("State database initialization is incomplete")
+                if version != 1:
+                    raise SafetyError(f"Unsupported database version: {version}")
+            except BaseException:
+                self.db.close()
+                raise
+            return
         self.db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=10000")

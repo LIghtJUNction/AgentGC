@@ -9,7 +9,7 @@ import select
 import struct
 import sys
 
-from .paths import Scope, SafetyError
+from .paths import Scope, SafetyError, no_links
 
 # Content events only: IN_ATTRIB would include our own file tag writes.
 MASK = 0x2 | 0x8 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
@@ -25,6 +25,8 @@ class Inotify:
         self.scope = scope
         self.max_watches = max_watches
         self.watches: dict[int, Path] = {}
+        self.control_wd: int | None = None
+        self.wake_fd: int | None = None
         self.lib = ctypes.CDLL(None, use_errno=True)
         self.lib.inotify_init1.argtypes = [ctypes.c_int]
         self.lib.inotify_init1.restype = ctypes.c_int
@@ -46,7 +48,7 @@ class Inotify:
         errors: list[str] = []
         for root in self.scope.roots:
             for path in self.scope.walk(root, errors, directories=True):
-                if len(visited) >= self.max_watches:
+                if len(visited) + (self.control_wd is not None) >= self.max_watches:
                     raise OSError(f"Watch limit ({self.max_watches}) reached; use --backend poll")
                 # IN_ONLYDIR | IN_DONT_FOLLOW protect watch registration.
                 wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK | 0x01000000 | 0x02000000)
@@ -60,11 +62,32 @@ class Inotify:
         if errors:
             raise OSError("; ".join(errors))
 
+    def watch_control(self, path: Path) -> None:
+        """Wake for private control events without indexing state as user files."""
+        no_links(path)
+        if self.control_wd is not None:
+            raise SafetyError("A control watch is already registered")
+        if len(self.watches) >= self.max_watches:
+            raise OSError(f"Watch limit ({self.max_watches}) reached; use --backend poll")
+        wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK | 0x01000000 | 0x02000000)
+        if wd < 0:
+            raise OSError(ctypes.get_errno(), "Cannot watch private control directory")
+        self.control_wd = wd
+
     def read(self, timeout: float) -> tuple[list[tuple[Path, str]], bool, bool]:
         """Return bounded file notices, rescan-needed, and queue-overflow flags."""
         notices: list[tuple[Path, str]] = []
         rescan = overflow = False
-        if not select.select([self.fd], [], [], timeout)[0]:
+        descriptors = [self.fd]
+        if self.wake_fd is not None:
+            descriptors.append(self.wake_fd)
+        ready = select.select(descriptors, [], [], timeout)[0]
+        if self.wake_fd is not None and self.wake_fd in ready:
+            try:
+                os.read(self.wake_fd, 4096)
+            except BlockingIOError:
+                pass
+        if self.fd not in ready:
             return notices, rescan, overflow
         for _ in range(8):
             try:
@@ -80,6 +103,8 @@ class Inotify:
                 if mask & 0x4000:  # IN_Q_OVERFLOW: provenance may have a gap.
                     rescan = overflow = True
                     continue
+                if wd == self.control_wd:
+                    continue  # Durable stop requests are checked by the tracker.
                 folder = self.watches.get(wd)
                 if folder is None or mask & 0x8000:  # IN_IGNORED
                     continue

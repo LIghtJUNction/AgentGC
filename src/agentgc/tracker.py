@@ -84,13 +84,27 @@ class Tracker:
             # A failed walk is not evidence of deletion. Suppress all missing-file
             # reconciliation for this pass rather than erasing inaccessible paths.
             if not self.errors:
-                rows = self.store.db.execute(
-                    "SELECT path FROM files WHERE present=1 AND (scan_token IS NULL OR scan_token<>?)", (token,)
-                )
-                for row in rows:
-                    path = Path(row["path"])
-                    if self.scope.includes(path):
-                        self.sync(path, source, token)
+                # POSIX uses path-index ranges. Windows scope comparisons are
+                # case-insensitive but this index is BINARY; retain the previous
+                # query there until a compatible normalized index exists.
+                # Root columns may reflect an older scope on either platform.
+                for root in ([None] if sys.platform == "win32" else self.scope.roots):
+                    if root is None:
+                        rows = self.store.db.execute(
+                            "SELECT path FROM files WHERE present=1 AND (scan_token IS NULL OR scan_token<>?)",
+                            (token,)
+                        )
+                    else:
+                        prefix = str(root).rstrip(os.sep) + os.sep
+                        upper = prefix[:-1] + chr(ord(os.sep) + 1)
+                        rows = self.store.db.execute(
+                            "SELECT path FROM files WHERE path>=? AND path<? AND present=1 "
+                            "AND (scan_token IS NULL OR scan_token<>?)", (prefix, upper, token)
+                        )
+                    for row in rows:
+                        path = Path(row["path"])
+                        if self.scope.includes(path):
+                            self.sync(path, source, token)
             if self.errors:
                 self.gap("Incomplete scan: " + "; ".join(self.errors))
             else:
@@ -120,6 +134,9 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
     code, interrupted, pending_scan = 0, False, False
     final_failed = False
     old_handlers: dict = {}
+    wake_fds: tuple[int, int] | None = None
+    previous_wakeup: int | None = None
+    control_wakeup = False
 
     def stop(signum, _frame):
         nonlocal interrupted, code
@@ -138,12 +155,39 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
             raise SafetyError("Baseline scan was incomplete; command was not started")
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_handlers[sig] = signal.signal(sig, stop)
+        if observer and sys.platform.startswith("linux"):
+            try:
+                wake_fds = os.pipe()
+                for fd in wake_fds:
+                    os.set_blocking(fd, False)
+                    os.set_inheritable(fd, False)
+                previous_wakeup = signal.set_wakeup_fd(wake_fds[1], warn_on_full_buffer=False)
+                observer.wake_fd = wake_fds[0]
+            except (OSError, ValueError, AttributeError) as exc:
+                if previous_wakeup is not None:
+                    signal.set_wakeup_fd(previous_wakeup)
+                    previous_wakeup = None
+                if wake_fds:
+                    for fd in wake_fds:
+                        os.close(fd)
+                    wake_fds = None
+                print(f"- agcc warning: Signal wakeup unavailable ({type(exc).__name__}); using short waits",
+                      file=sys.stderr)
+        if observer and control:
+            try:
+                observer.watch_control(control.path)
+                control_wakeup = True
+            except (OSError, AttributeError, SafetyError) as exc:
+                print(f"- agcc warning: Control event wakeup unavailable ({type(exc).__name__}); using short waits",
+                      file=sys.stderr)
         if command:
             env = dict(os.environ, AGENTGC_SESSION=sid, AGENTGC_HOME=str(store.home))
             process = subprocess.Popen(command, env=env)  # No shell; preserve argv and exit status.
+        # Baseline/setup can be slow; readiness must start with fresh health.
+        store.db.execute("UPDATE sessions SET heartbeat=? WHERE id=?", (time.time(), sid))
         print(f"agcc: session {sid}; backend {observer.name if observer else 'poll'}", file=sys.stderr)
         if control:
-            control.ready(sid)
+            control.ready(sid, scope, duration)
         start = last_scan = last_beat = time.monotonic()
         while not interrupted:
             if control and control.stopping():
@@ -154,26 +198,34 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
             now = time.monotonic()
             if duration is not None and now - start >= duration:
                 break
-            timeout = min(interval, 0.25) if process else min(interval, 1)
+            due = interval if observer is None or pending_scan else reconcile
+            deadline = min(last_scan + due, last_beat + 5)
             if duration is not None:
-                timeout = min(timeout, max(0, duration - (now - start)))
+                deadline = min(deadline, start + duration)
+            timeout = max(0, deadline - now)
+            if process is not None:
+                timeout = min(timeout, interval, 0.25)
+            elif observer is None or wake_fds is None or (control and not control_wakeup):
+                timeout = min(timeout, interval, 1)
             if observer:
                 notices, dirty, overflow = observer.read(timeout)
                 pending_scan |= dirty
-                with store.transaction():
-                    for path, kind in notices:
-                        tracker.sync(path)
-                        # Retain evidence of short-lived files even if their metadata
-                        # is already gone. Do not invent a size or process identity.
-                        if not path.exists():
-                            store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
-                    if tracker.errors:
-                        tracker.gap("Incomplete event read: " + "; ".join(tracker.errors))
-                        tracker.errors = []
-                    if overflow:
-                        tracker.gap("Native event queue overflow; reconciling surviving files")
+                if notices or tracker.errors or overflow:
+                    with store.transaction():
+                        for path, kind in notices:
+                            tracker.sync(path)
+                            # Retain short-lived evidence without inventing metadata.
+                            if not path.exists():
+                                store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
+                        if tracker.errors:
+                            tracker.gap("Incomplete event read: " + "; ".join(tracker.errors))
+                            tracker.errors = []
+                        if overflow:
+                            tracker.gap("Native event queue overflow; reconciling surviving files")
             else:
                 time.sleep(timeout)
+            if interrupted or (control and control.stopping()):
+                break
             now = time.monotonic()
             due = interval if observer is None or pending_scan else reconcile
             if now - last_scan >= due:
@@ -215,17 +267,18 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                 try:
                     for batch in range(32):
                         notices, _, overflow = observer.read(0)
-                        with store.transaction():
-                            for path, kind in notices:
-                                tracker.sync(path)
-                                if not path.exists():
-                                    store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
-                            if tracker.errors:
-                                tracker.gap("Incomplete final event read: " + "; ".join(tracker.errors))
-                                tracker.errors = []
-                                final_failed = True
-                            if overflow:
-                                tracker.gap("Queue overflow at session end")
+                        if notices or tracker.errors or overflow:
+                            with store.transaction():
+                                for path, kind in notices:
+                                    tracker.sync(path)
+                                    if not path.exists():
+                                        store.event(str(path), kind + "-unresolved", "filesystem-event", sid)
+                                if tracker.errors:
+                                    tracker.gap("Incomplete final event read: " + "; ".join(tracker.errors))
+                                    tracker.errors = []
+                                    final_failed = True
+                                if overflow:
+                                    tracker.gap("Queue overflow at session end")
                         if not observer.pending():
                             break
                         if batch == 31 or time.monotonic() >= deadline:
@@ -244,6 +297,11 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
         finally:
             if observer:
                 observer.close()
+            if previous_wakeup is not None:
+                signal.set_wakeup_fd(previous_wakeup)
+            if wake_fds:
+                for fd in wake_fds:
+                    os.close(fd)
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
             if final_failed and command is None and not interrupted:

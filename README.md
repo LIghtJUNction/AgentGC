@@ -55,13 +55,16 @@ agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-comman
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
 agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
-agcc watch-stop task-UNIQUE_ID
+agcc watch-status task-UNIQUE_ID --wait-ready 30
+agcc watch-stop task-UNIQUE_ID --wait 30
 agcc scan --root .
 ```
 
-`watch --control` 适合 Agent 自行启动后台跟踪：每次使用新的控制名，基线完成后在 `<状态目录>/watches/<控制名>/ready.json` 写入会话 ID 和 PID。通过 `agcc --json doctor` 查询状态目录。开始修改前先读取就绪记录并核对会话仍在运行；后台进程已经启动不代表基线完成。控制名只允许 1–64 个 ASCII 字母、数字、下划线或连字符，不能复用。
+`watch --control` 适合 Agent 自行启动后台跟踪：通过执行工具的后台机制启动一次，基线就绪后继续完成其他软件工程任务，结束时再停止；不要每次编辑或查询都新建 watcher。优先复用已确认存活、同一状态目录且覆盖本任务根目录与排除规则的跟踪，不停止其他任务的 watcher。新建时每次使用新的控制名；控制名只允许 1–64 个 ASCII 字母、数字、下划线或连字符，不能复用。
 
-`watch-stop` 只发送协作式停止请求，不发送 PID 信号，也不会直接关闭会话记录。收到请求后 watcher 做最终扫描并自行结束；Agent 必须等待对应会话离开 `running`。受控 watcher 未指定时长时默认最多运行 3600 秒，不是永久后台服务。就绪超时、跟踪提前结束或扫描缺口必须明确报告；停止跟踪不代表所有业务写入者都已停止，也不授权清理。
+基线成功后，完整就绪记录原子发布到 `<状态目录>/watches/<控制名>/ready.json`，包含会话 ID、PID、根目录、排除项和预计到期时间。状态目录可通过 `agcc --json doctor` 查询。`watch-status <控制名> --wait-ready 30` 在一个 CLI 调用内等待就绪，只输出一次结果，不需要 Agent 反复读取整个会话列表。失败或超时返回非零；开始写入前还须核对 `roots`、`excludes`、`coverage_known` 和 `gaps`。旧版就绪记录的排除范围未知，不能仅凭运行状态推定覆盖完整。心跳只是近期活动证据，不证明写入者身份。控制命令以非写入连接读取已有状态，不初始化或迁移数据库，也不因基线的写事务争抢写锁；等待预算包含打开状态的时间。状态尚未初始化时只等待并报告 `starting`，不创建新目录。
+
+`watch-stop` 只发送协作式停止请求，不发送 PID 信号，也不会直接关闭会话记录；`--wait 30` 等待最终扫描并只输出一次结果，只有正常完成才返回零。两个等待选项均接受最多 300 秒，内部使用有上限的退避查询，不产生反复工具调用。受控 watcher 未指定时长时默认最多运行 3600 秒，不是永久后台服务；长任务应显式选择足够的有限时长。就绪超时、跟踪提前结束或扫描缺口必须明确报告；停止跟踪不代表所有业务写入者都已停止，也不授权清理。
 
 `run` 保留子进程的输入、输出和退出码，不使用额外的 shell。命令中需要 shell 运算符时，应显式调用 shell。会话信息写入 stderr，不混入子进程 stdout。包装器把 `AGENTGC_SESSION` 和 `AGENTGC_HOME` 传给子进程。
 
@@ -103,7 +106,7 @@ agcc --details sync --dry-run           # 包括未变化的规则观察
 agcc --json list --sort size --limit 100   # 脚本解析、原始字段与完整返回记录
 ```
 
-`--json` 的数据和结构不变；不要用 Markdown 做机器解析。GC 候选与拒绝原因、恢复记录、已返回的错误和缺口不加展示层截断。sync 汇总全部观察中的 unknown，即使状态未变化；未完整扫描仍明确提示。路径、备注中的控制字符、双向字符与 HTML 转义显示，原始值从 JSON 查询。`run` 的子命令 stdout/stderr 和退出码不变，agcc 自身的 Markdown 摘要在 stderr；摘要读取本机会话状态、缺口数及尚保留的 unresolved 事件数，读取失败时显示不可用；零计数不证明历史完整，不把退出成功当作无缺口。文件系统风险、GC 拒绝、恢复与缺口明细不受 `--rows` 截断。
+`--json` 输出命令的原始返回字段，不做 Markdown 展示裁剪；不要用 Markdown 做机器解析。GC 候选与拒绝原因、恢复记录、已返回的错误和缺口不加展示层截断。sync 汇总全部观察中的 unknown，即使状态未变化；未完整扫描仍明确提示。路径、备注中的控制字符、双向字符与 HTML 转义显示，原始值从 JSON 查询。`run` 的子命令 stdout/stderr 和退出码不变，agcc 自身的 Markdown 摘要在 stderr；摘要读取本机会话状态、缺口数及尚保留的 unresolved 事件数，读取失败时显示不可用；零计数不证明历史完整，不把退出成功当作无缺口。文件系统风险、GC 拒绝、恢复与缺口明细不受 `--rows` 截断。
 
 ## 查询与标记
 
@@ -196,7 +199,9 @@ agcc --json reviews
 
 任一候选目录达到 100000 个文件也会提醒（`--file-threshold` 可调整），避免漏掉占用不大但文件数暴涨的测试残留。常见包缓存、工具安装、数据库和模型存储也会作为审核候选；包缓存如独立挂载的 `/var/cache/pacman/pkg` 必须显式选择。
 
-默认提醒阈值：`target/build/dist/.next` 为 512 MiB，依赖目录 `node_modules/.venv/venv` 和常见缓存为 1 GiB，`log/logs` 为 256 MiB，隔离目录为 1 MiB，`Backups/docker/containers` 受保护存储为 5 GiB。文件系统使用率达到 80% 或余量低于 5 GiB 提醒，达到 90% 或低于 2 GiB 标为紧急。阈值不是行业标准，可按项目通过 `--threshold 类别=MiB` 覆盖；类别见 `agcc pressure --help`。
+默认提醒阈值：`target/build/dist/.next` 为 512 MiB，依赖目录 `node_modules/.venv/venv` 和常见缓存为 1 GiB，`log/logs` 为 256 MiB，隔离目录为 1 MiB，`Backups/docker/containers` 受保护存储为 5 GiB。文件系统容量使用率达到 80% 或余量低于 5 GiB 提醒，达到 90% 或低于 2 GiB 标为紧急。阈值不是行业标准；目录大小可按项目通过 `--threshold 类别=MiB` 覆盖，类别见 `agcc pressure --help`。
+
+`pressure` 和 `sync` 还会对每个已选文件系统采样一次 inode（文件系统的文件／目录条目容量），不增加目录扫描。按当前用户可用的空闲数 `f_favail` 计算，使用率达到 80% 提醒、90% 紧急，与容量风险取并集。JSON 的 `disks` 增加 `inode_status`、`total_inodes`、`free_inodes`、`inode_used_percent`、`inode_attention`、`inode_urgent`、`inode_reason`；Markdown 同样展示且不受普通行数限制。没有此 API、Btrfs 等报告无固定总量的文件系统标为 `unsupported`；读取失败或计数无效标为 `unknown`。未知数量为 `null`，不是零或安全证明；它不会把完整目录计量误判成扫描失败，也不改变增长基线和清理许可。
 
 **超过阈值只表示需要注意，不表示可以删。** 默认只预览；`--apply` 将超阈值目录的 `review` 备注存入 SQLite 的独立目录记录，不改变文件分类，不授予清理许可。`reviews` 显示历史观察，操作前必须重测。数据库、容器卷、实际依赖和唯一备份需要保护，不能因目录名判断用途。
 
@@ -239,7 +244,9 @@ SQLite 使用 WAL、写入事务和忙等待。不同的本地进程可使用同
 
 索引包含绝对路径、Agent 标签和人工备注，请按私有数据管理。不保存完整命令参数，不上传记录，不接入远程服务。不要在 Agent 名称或备注中写入密钥。跟踪只检查文件元数据；仅在审核和隔离核对时流式读取文件内容，缓冲区为 1 MiB。
 
-目录扫描采用流式遍历，不在内存中保存第二份完整文件索引。Linux 事件每批最多处理 4096 个路径，超限后记录缺口并核对目录。扫描和原生目录监听仍会随文件数、目录数增长；不承诺固定资源占用。
+目录扫描采用流式遍历，不在内存中保存第二份完整文件索引；POSIX 的消失文件核对只查询所选路径的索引范围，不遍历同一 SQLite 中所有其他项目。Windows 暂时保留原核对查询，避免路径大小写变化导致漏记删除。Linux 事件每批最多处理 4096 个路径，超限后记录缺口并核对目录。
+
+Linux 原生后台 `watch` 空闲时阻塞等待事件或下一维护期限，不按 `--interval` 反复醒来；仍保留 5 秒心跳、定期完整核对、时长限制和最终扫描。停止文件通过私有目录的原生事件唤醒等待，SIGINT/SIGTERM 通过唤醒管道及时处理；空事件不启动 SQLite 写事务。控制目录不作为用户文件入库，其监听也计入 8192 个默认目录监听预算。唤醒不可用时明确提示并保留短等待；命令包装器仍定期检查直接子进程退出，macOS/Windows 仍使用扫描。扫描和原生目录监听仍会随文件数、目录数增长；不承诺固定资源占用，也不会自动删除内容以释放空间。
 
 ```sh
 agcc prune --days 30
@@ -259,7 +266,7 @@ agcc skill --install /path/to/your-agent/skills
 agcc skill --install ~/.agents/skills
 ```
 
-全局技能要求 Agent 在本地修改代码或文档、构建、测试、安装依赖、运行脚本和生成产物前主动跟踪，无需用户专门提到清理。只读问答和纯远程操作无需本地 watcher。已有覆盖本任务目录的可信跟踪可复用；当前会话直接编辑文件时，可自行启动 `watch --control`，等待就绪后再写入，结束时请求停止、等待最终扫描并检查本会话的历史与产物。不能把一次事后扫描说成完整跟踪。
+全局技能要求 Agent 在本地修改代码或文档、构建、测试、安装依赖、运行脚本和生成产物前主动跟踪，无需用户专门提到清理。只读问答和纯远程操作无需本地 watcher。已有覆盖本任务目录与排除规则的可信跟踪可复用；当前会话直接编辑文件时，可自行在后台启动一次 `watch --control`，用 `watch-status --wait-ready` 等待就绪后再写入，让它跨编辑、构建、测试持续运行，结束时用 `watch-stop --wait` 等待最终扫描并检查本会话的历史与产物。不能把一次事后扫描说成完整跟踪。
 
 Pi 安装后用 `/reload` 刷新技能，或显式输入 `/skill:agentgc`。技能是 Agent 的行为指引，不是自动执行钩子：不能保证所有客户端或模型都遵守，也不会开启全盘常驻监控。已有技能不会覆盖，更新安装副本前应保存自定义内容；仓库与安装副本不会自动同步。主动跟踪不等于主动删除，清理仍需用途与引用检查、用户许可和预览。
 

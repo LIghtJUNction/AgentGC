@@ -4,9 +4,15 @@
 
 `paths.py` controls roots, exclusions, link checks, and streaming digests.
 `store.py` owns the SQLite schema, transactions, sessions, queries, and events.
+Control clients use its existing-database read-only mode, with no schema writes,
+migration, directory creation or writer-lock wait. Database opening counts toward
+client wait deadlines; missing/version-zero initialization remains pending.
 `native.py` implements Linux inotify with the system C library.
 `tracker.py` records observations and runs the child command.
-`watch_control.py` provides task-scoped readiness and cooperative stop requests.
+`watch_control.py` provides task-scoped readiness, compact health queries and
+cooperative stop requests. Atomic readiness publication uses a non-overwriting
+hard link in the private local state directory; unsupported filesystems fail
+visibly rather than exposing partial JSON. Records are bounded to 4096 bytes.
 `tags.py` writes optional platform metadata. Tags are never trusted input.
 `cleanup.py` handles review, quarantine, restore, and recovery records.
 `cli.py` parses commands and dispatches output. The bundled skill is package data.
@@ -26,6 +32,13 @@ historical attention notes, separate from file labels and cleanup authorization.
 Thresholds never create disposable reviews. Incomplete byte counts are lower
 bounds; nested candidates and hard links may overlap. Skip symlinks, runtime
 pseudo-filesystems, and unselected mount boundaries; do not read file contents.
+Per-device inode samples use `statvfs.f_files` and current-user usable
+`statvfs.f_favail`, never directory counts or `f_ffree` as a capacity substitute.
+Usage >=80%/90% adds attention/urgency to byte pressure. Missing API or zero fixed
+capacity is unsupported; failures/invalid counters are unknown and all unknown
+numeric/boolean fields stay null. These are additive `disks` fields, forwarded by
+sync and rendered without row truncation. They do not change rules, file labels,
+cleanup authorization, or complete directory measurement/growth baselines.
 
 `rules.py` loads bounded, non-linked TOML `.agcc` files, validates the closed
 schema, merges builtin policy, and matches anchored relative paths.
@@ -98,6 +111,41 @@ CPU time of an idle native event wait when available. It is not a full
 harness benchmark. Allocation peak excludes the interpreter baseline and
 native/SQLite allocations. Timing is machine-dependent.
 
+### Background watcher regressions
+
+`tests/test_background_efficiency.py` uses fake clocks to verify maintenance
+rather than interval-driven idle waits: an 11-second native watch waits for
+5, 5 and 1 seconds, with only baseline/final scan transactions. Dirty events,
+reconciliation and duration retain their deadlines; signal-wakeup fallback
+keeps bounded short waits. Real signal wakeup descriptors and handlers are
+restored, and private control watches share the directory-watch budget.
+POSIX missing-file reconciliation uses selected path-index ranges, including
+previously indexed nested roots, without examining unrelated workspaces. Windows
+retains the previous query because BINARY index ordering does not match its
+case-insensitive scope semantics. A Linux mock covers fallback candidate selection;
+the separate real Windows case-rename test skips elsewhere. A fake slow baseline
+also verifies a fresh heartbeat before readiness, even for short-lived watchers.
+
+`tests/test_control_status.py` covers atomic bounded publication, malformed or
+linked records, session identity, unknown legacy exclusions, stale/expired
+health, bounded local backoff and one-result CLI waits. Linux subprocess tests
+exercise cooperative stop and SIGTERM during idle native waits, final scanning,
+interrupted status, and exclusion of private control files from the user index.
+Health queries never close sessions. Existing `closed-by-user` status is terminal
+but not normal completion. Isolated subprocess waits under a held WAL writer lock
+verify read-only clients are not blocked by baseline writes. Missing/initializing
+state is never created or migrated; a fake clock verifies opening-time accounting.
+The bounded client wait backs off from 0.1 seconds to at most 1 second; it is not
+itself a platform event backend.
+
+`tests/test_inode_pressure.py` mocks filesystem counters rather than creating
+large file populations. It checks current-user availability, exact thresholds
+before display rounding, zero available versus zero total, unknown/unsupported
+counts, per-device sampling, both output paths and absence of cleanup permission.
+Run these alongside the full suite in isolated temporary directories. Do not
+place cleanup fixtures beneath unverifiable Git metadata or weaken protection to
+make them pass. Avoid stress-generated file trees when a small mock suffices.
+
 Do not claim that filesystem events prove which process wrote a file.
 Do not claim that quarantine frees disk space. File byte totals are logical
 sizes, not unique physical blocks. Do not report CI success without reading
@@ -110,16 +158,31 @@ boundary against another process with the same user permissions. Read-only
 queries are safe during tracking. Cleanup requires stopped writers and a
 user review. Sessions in separate state directories cannot guard each other.
 
-Controlled watchers publish readiness only after a successful baseline. Their
+Controlled watchers publish readiness only after a successful baseline and a
+fresh heartbeat. Their
 unique control directories live beneath the private state home and cannot be
-reused. Stop requests never signal recorded PIDs or close session records:
-only the watcher ends its session after final reconciliation. A stop request
+reused. Roots, exclusions and expected expiry accompany session/PID metadata;
+legacy records explicitly have unknown exclusion coverage. Recent heartbeat
+health is evidence, not proof that writers are live. `watch-status --wait-ready`
+and `watch-stop --wait` provide single-result waits capped at 300 seconds;
+normal completion alone is success. Stop requests never signal recorded PIDs or
+close session records: only the watcher ends after final reconciliation. A stop request
 is not evidence that application writers have stopped. Reject linked control
 paths and malformed readiness records. Readiness timeouts and early watcher
 exits are tracking gaps, not permission to bypass cleanup protections.
 
+Idle Linux native watches wait until file/control events or the nearest
+heartbeat, reconciliation, dirty-scan or duration deadline. A nonblocking signal
+pipe wakes SIGINT/SIGTERM and is restored/closed during finalization; failures
+retain short waits with a warning. Command wrappers still bound child-exit
+checks, and polling platforms keep their scan behavior. Empty native reads do
+not begin write transactions. Private control notifications only wake durable
+stop checks, never become user-file evidence. They count toward watch limits.
+
 An unchanged scan writes scan tokens but creates no file change events.
-A failed scan must not treat unreadable files as deleted. Native queues
+POSIX missing-file queries use indexed path ranges rather than a shared-store-wide
+pass; Windows preserves case-insensitive reconciliation with the earlier query.
+Exclusions still apply, and remembered root columns need not match a later scope. A failed scan must not treat unreadable files as deleted. Native queues
 and reconciliation may miss intermediate states; retain explicit gap records.
 Tags can fail, become stale, or be forged; do not use them as cleanup permits.
 

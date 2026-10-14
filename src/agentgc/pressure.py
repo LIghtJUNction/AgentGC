@@ -30,6 +30,32 @@ SKIP = {".git"}
 SYSTEM_SKIP = {Path("/proc"), Path("/sys"), Path("/dev"), Path("/run")}
 
 
+def inode_usage(root: Path) -> dict:
+    """Sample usable inode capacity once; unknown is not zero or safe."""
+    result = {"inode_status": "unknown", "total_inodes": None, "free_inodes": None,
+              "inode_used_percent": None, "inode_attention": None, "inode_urgent": None,
+              "inode_reason": None}
+    sample = getattr(os, "statvfs", None)
+    if sample is None:
+        return {**result, "inode_status": "unsupported", "inode_reason": "statvfs unavailable"}
+    try:
+        info = sample(root)
+        total, available = info.f_files, info.f_favail
+    except (OSError, AttributeError, NotImplementedError) as exc:
+        return {**result, "inode_reason": "inode metadata unavailable: " + type(exc).__name__}
+    if type(total) is not int or total < 0:
+        return {**result, "inode_reason": "invalid inode capacity"}
+    if total == 0:
+        return {**result, "inode_status": "unsupported",
+                "inode_reason": "filesystem reports no fixed inode capacity"}
+    if type(available) is not int or not 0 <= available <= total:
+        return {**result, "inode_reason": "invalid usable free inode count"}
+    percent = 100 * (total - available) / total
+    return {**result, "inode_status": "known", "total_inodes": total, "free_inodes": available,
+            "inode_used_percent": round(percent, 2), "inode_attention": percent >= 80,
+            "inode_urgent": percent >= 90}
+
+
 def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
               max_entries: int = 200000, max_seconds: float = 30,
               state_home: Path | None = None, file_threshold: int = 100000,
@@ -155,9 +181,11 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
             seen_devices.add(device)
             usage = shutil.disk_usage(root)
             percent = 100 * usage.used / usage.total if usage.total else 0
+            inodes = inode_usage(root)
             disks.append({"root": str(root), "used_percent": round(percent, 2), "free_bytes": usage.free,
-                          "attention": percent >= 80 or usage.free < 5120*MIB,
-                          "urgent": percent >= 90 or usage.free < 2048*MIB})
+                          **inodes,
+                          "attention": percent >= 80 or usage.free < 5120*MIB or inodes["inode_attention"] is True,
+                          "urgent": percent >= 90 or usage.free < 2048*MIB or inodes["inode_urgent"] is True})
     return {"roots": [str(p) for p in actual], "items": sorted(records.values(), key=lambda r: -r["bytes"]),
             "disks": disks,
             "entries": entries, "complete": not gaps, "gaps": gaps,

@@ -55,13 +55,16 @@ agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-comman
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
 agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
-agcc watch-stop task-UNIQUE_ID
+agcc watch-status task-UNIQUE_ID --wait-ready 30
+agcc watch-stop task-UNIQUE_ID --wait 30
 agcc scan --root .
 ```
 
-`watch --control` lets an agent manage its own background watcher. Use a new control name for every task. After the baseline succeeds, it writes the session ID and PID to `<state-home>/watches/<control>/ready.json`. Find the state directory with `agcc --json doctor`. Read readiness and confirm the session is still running before editing; a launched background process does not prove the baseline is ready. Control names allow 1–64 ASCII letters, digits, underscores, or hyphens and cannot be reused.
+Start `watch --control` once through the execution tool's background mechanism, then keep working on the engineering task while it tracks edits, builds and tests. Do not restart it for each operation. Reuse only confirmed live tracking with the same state home, correct roots and compatible exclusions; never stop another task's watcher. New controls require unique names of 1–64 ASCII letters, digits, underscores or hyphens.
 
-`watch-stop` only requests a cooperative stop. It does not signal a PID or directly close a session record. The watcher performs its final scan and ends itself; wait for that session to leave `running`. Controlled watchers default to a 3600-second limit when no duration is supplied, not a permanent background service. Report readiness timeouts, early exits, and tracking gaps. Stopping a watcher does not prove that application writers have stopped or authorize cleanup.
+After a successful baseline, the complete readiness record is published atomically to `<state-home>/watches/<control>/ready.json`, including session, PID, roots, exclusions and expected expiry. Find the state directory with `agcc --json doctor`. `watch-status CONTROL --wait-ready 30` waits locally in one CLI call and emits one result, rather than requiring repeated agent calls or full session dumps. Failure or timeout returns nonzero. Before writing, also check `roots`, `excludes`, `coverage_known` and `gaps`. Legacy records lack exclusion evidence. Recent heartbeat evidence alone does not prove writer identity or complete coverage. Control commands read existing state through a non-writing connection, without schema initialization/migration or contention for the baseline's write lock. Store opening counts toward the wait budget; missing or initializing state remains `starting`, without creating directories.
+
+`watch-stop` only requests a cooperative stop, without signaling a PID or directly closing a session. `--wait 30` waits for final reconciliation, emits one result, and returns zero only for normal completion. Both wait options accept up to 300 seconds and use bounded local backoff queries. Controlled watchers default to a finite 3600-second duration; choose a sufficient explicit duration for longer tasks. They are not permanent daemons. Report readiness timeouts, early exits and gaps. Watcher completion does not prove application writers stopped or authorize cleanup.
 
 `run` preserves the child's input, output, and exit code without adding a shell. If a command needs shell operators, invoke a shell explicitly. Session information goes to stderr, not the child's stdout. The wrapper passes `AGENTGC_SESSION` and `AGENTGC_HOME` to the child.
 
@@ -103,7 +106,7 @@ agcc --details sync --dry-run           # includes unchanged observations
 agcc --json list --sort size --limit 100   # machine parsing and raw returned records
 ```
 
-JSON payloads remain unchanged; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. The summary reads local session status, gap counts and retained unresolved-event counts; read failures are explicitly unavailable. Zero counts do not prove complete history; successful child exit does not imply gap-free tracking. Filesystem risks, GC refusals, recovery and gap details bypass `--rows`.
+JSON retains raw command fields without Markdown presentation caps; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. The summary reads local session status, gap counts and retained unresolved-event counts; read failures are explicitly unavailable. Zero counts do not prove complete history; successful child exit does not imply gap-free tracking. Filesystem risks, GC refusals, recovery and gap details bypass `--rows`.
 
 ## Queries and labels
 
@@ -189,7 +192,9 @@ agcc --json reviews
 
 Any candidate with >=100000 files also flags attention (`--file-threshold` overrides it), catching small-file test explosions below byte thresholds. Common package caches, tool installations, databases, and model stores are review candidates too. Explicitly select separately mounted stores such as `/var/cache/pacman/pkg`.
 
-Review defaults: `target/build/dist/.next` 512 MiB; `node_modules/.venv/venv` and common caches 1 GiB; `log/logs` 256 MiB; quarantine 1 MiB; protected `Backups/docker/containers` storage 5 GiB. Filesystem usage >=80% or free space <5 GiB flags attention; >=90% or <2 GiB is urgent. These are adjustable heuristics, not industry standards. Use `--threshold CATEGORY=MIB`; see `agcc pressure --help` for categories.
+Review defaults: `target/build/dist/.next` 512 MiB; `node_modules/.venv/venv` and common caches 1 GiB; `log/logs` 256 MiB; quarantine 1 MiB; protected `Backups/docker/containers` storage 5 GiB. Filesystem byte usage >=80% or free space <5 GiB flags attention; >=90% or <2 GiB is urgent. These are heuristics, not industry standards. Directory size thresholds are adjustable with `--threshold CATEGORY=MIB`; see `agcc pressure --help` for categories.
+
+`pressure` and `sync` also sample inode capacity once per selected filesystem, without extra traversal. Inodes represent filesystem file/directory entry capacity. Usage is based on `f_favail`, the free count available to the current user; >=80% flags attention and >=90% is urgent, combined with byte pressure. Additive `disks` fields are `inode_status`, `total_inodes`, `free_inodes`, `inode_used_percent`, `inode_attention`, `inode_urgent` and `inode_reason`; Markdown shows them without a routine-row cap. Missing APIs or no fixed capacity (for example Btrfs reporting zero total) are `unsupported`; read failures or invalid counters are `unknown`. Unknown numbers are `null`, not zero or evidence of safety. This does not invalidate complete directory measurements, alter growth baselines, or grant cleanup permission.
 
 Exceeding a threshold is never cleanup permission. Default mode is preview. `--apply` saves separate SQLite directory `review` notes, never changes file labels or authorizes cleanup. `reviews` are historical observations: remeasure before acting. Protect databases, container volumes, live dependencies, and unique backups. Directory names do not prove their purpose.
 
@@ -232,7 +237,9 @@ SQLite uses WAL, write transactions, and a busy timeout. Multiple local processe
 
 The index contains absolute paths, agent labels, and manual notes; treat it as private data. It does not save full command arguments, upload records, or connect to remote services. Do not put secrets in agent names or notes. Tracking checks file metadata only; review and quarantine validation stream file contents with a 1 MiB buffer.
 
-Directory scans use streaming traversal without holding a second full file index in memory. Linux events process at most 4096 paths per batch; exceeding that limit records a gap and reconciles the directory. Scanning and native directory watches still scale with file and directory counts; resource use is not guaranteed to be constant.
+Directory scans stream without holding a second full file index. POSIX missing-file reconciliation queries only selected path-index ranges, not every other workspace in a shared database. Windows retains its previous query to preserve case-insensitive path matching. Linux events process at most 4096 paths per batch; exceeding the limit records a gap and reconciles surviving files.
+
+Idle Linux native `watch` blocks until events or the next maintenance deadline instead of waking on every `--interval`. It retains 5-second heartbeats, periodic reconciliation, duration limits and final scanning. Private control events wake cooperative stops; a signal pipe wakes SIGINT/SIGTERM; empty event batches do not start SQLite write transactions. Control files are not indexed as user files, and the control watch counts toward the default 8192-watch budget. Wakeup failures produce a warning and short waits. Command wrappers still check direct-child exit; macOS/Windows still poll. Resource use scales with file/directory counts, is not constant, and never triggers automatic deletion.
 
 ```sh
 agcc prune --days 30
@@ -252,7 +259,7 @@ agcc skill --install /path/to/your-agent/skills
 agcc skill --install ~/.agents/skills
 ```
 
-The global skill instructs agents to proactively track before local code or document edits, builds, tests, dependency installs, scripts, and artifact generation, even without a cleanup request. Read-only questions and remote-only work do not need a local watcher. Reuse known live tracking that covers the task's roots. For direct file-tool edits in the current session, start `watch --control`, wait for readiness, then write. At completion, request a stop, wait for the final scan, and inspect session history and outputs. A post-task snapshot is not a substitute for tracking.
+The global skill instructs agents to proactively track before local code or document edits, builds, tests, dependency installs, scripts, and artifact generation, even without a cleanup request. Read-only questions and remote-only work do not need a local watcher. Reuse known live tracking with compatible roots and exclusions. For direct file-tool edits, start one background `watch --control`, use `watch-status --wait-ready`, then keep it running across edits, builds and tests. At completion, use `watch-stop --wait` and inspect session history and outputs. A post-task snapshot is not a substitute for tracking.
 
 In Pi, run `/reload` after installation, or invoke `/skill:agentgc` explicitly. Skills are agent instructions, not automatic execution hooks: they cannot guarantee compliance by every client or model and do not enable persistent whole-system monitoring. Existing skills are not overwritten; preserve customizations before updating an installed copy. Repository and installed copies do not synchronize automatically. Proactive tracking does not mean automatic deletion; cleanup still requires use and reference checks, user permission, and a preview.
 

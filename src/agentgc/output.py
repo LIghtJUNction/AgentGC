@@ -7,6 +7,8 @@ import re
 import unicodedata
 
 DISPLAY_LIMIT = 20
+DISK_FIELDS = ('root','used_percent','free_bytes','inode_status','total_inodes','free_inodes',
+               'inode_used_percent','inode_attention','inode_urgent','inode_reason','attention','urgent')
 
 
 def inline(value) -> str:
@@ -125,7 +127,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         changes = row.get('changes', [])
         unknown = [r for r in observations if r.get('evaluation') == 'unknown']
         summary(row, ('mode','project','config','complete','entries'))
-        rows(row.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'), limit=None)
+        rows(row.get('disks', []), DISK_FIELDS, limit=None)
         states = ', '.join(f'{k}={v}' for k,v in sorted(Counter(r.get('state','unknown') for r in observations).items()))
         lines.append(f'- Observations={len(observations)}; changes={len(changes)}; unknown={len(unknown)}; notifications={len(row.get("notifications", []))}. {states}')
         warnings(row)
@@ -172,7 +174,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         elif command == 'pressure':
             summary(data, ('mode','roots','complete','entries','saved_reviews'))
             warnings(data)
-            rows(data.get('disks', []), ('root','used_percent','free_bytes','attention','urgent'), limit=None)
+            rows(data.get('disks', []), DISK_FIELDS, limit=None)
             items = data.get('items', [])
             lines.append(f'- Candidates={len(items)}; attention={sum(bool(r.get("attention")) for r in items)}.')
             rows(sorted(items, key=lambda r: not r.get('attention')), ('path','category','bytes','files','attention','reasons','complete'))
@@ -206,7 +208,10 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
                     summary(tracking, ('status','backend','gaps','retained_unresolved_events'))
                     lines.append('- Recorded counts only; zero does not prove complete history or writer identity.')
             if command == 'watch-stop':
-                lines.append('- Stop requested only; wait for the session final scan to finish.')
+                if data.get('status') == 'finished':
+                    lines.append('- Watcher finalization finished; this is not proof that application writers stopped or cleanup permission.')
+                else:
+                    lines.append('- Stop requested only; wait for the session final scan to finish.')
             if 'automatic' in data:
                 lines.append('### Automatic')
                 automatic = data['automatic']

@@ -17,7 +17,7 @@ from .paths import Scope, SafetyError, absolute, default_home, no_links
 from .store import LABELS, Store
 from .pressure import DEFAULTS, MIB, inventory, reviews, save_reviews
 from .tracker import scan_once, track
-from .watch_control import WatchControl, request_stop
+from .watch_control import WatchControl, control_command, request_stop, wait_status, watch_status
 from .rules import load as load_rules, matches
 from .sync import reconcile, marks as automatic_marks, table_exists
 from .output import DISPLAY_LIMIT, markdown
@@ -27,6 +27,13 @@ def positive(value: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result <= 0:
         raise argparse.ArgumentTypeError("must be a finite positive number")
+    return result
+
+
+def bounded_wait(value: str) -> float:
+    result = positive(value)
+    if result > 300:
+        raise argparse.ArgumentTypeError("must be at most 300 seconds")
     return result
 
 
@@ -65,6 +72,10 @@ def parser() -> argparse.ArgumentParser:
                 cmd.add_argument("--control", help="unique cooperative control name; default duration: 3600 seconds")
     cmd = sub.add_parser("watch-stop", help="request a controlled watcher to stop and perform its final scan")
     cmd.add_argument("control", help="control name used with watch --control")
+    cmd.add_argument("--wait", type=bounded_wait, help="wait up to 300 seconds for finalization; emit one result")
+    cmd = sub.add_parser("watch-status", help="inspect one control without listing unrelated sessions")
+    cmd.add_argument("control", help="control name used with watch --control")
+    cmd.add_argument("--wait-ready", type=bounded_wait, help="wait up to 300 seconds for baseline/readiness; emit one result")
     for name in ("list", "search"):
         cmd = sub.add_parser(name, help="query the file index")
         if name == "search":
@@ -213,8 +224,17 @@ def execute(args, store: Store) -> tuple[object, int]:
             except (OSError, ValueError, sqlite3.Error) as exc:
                 result['automatic'] = {'complete':False,'error':str(exc)}
         return result, code
+    if action == "watch-status":
+        result = (wait_status(store, args.control, "ready", args.wait_ready) if args.wait_ready is not None
+                  else watch_status(store, args.control))
+        success = result["ready"] or (args.wait_ready is None and result.get("state") == "finished")
+        return result, 0 if success else 1
     if action == "watch-stop":
-        return request_stop(store, args.control), 0
+        result = request_stop(store, args.control)
+        if args.wait is not None:
+            result = {**result, **wait_status(store, args.control, "finished", args.wait)}
+            return result, 0 if result["state"] == "finished" else 1
+        return result, 0
     if action in ("list", "search"):
         return store.list_files(getattr(args, "query", ""), args.sort, args.label, args.all,
                                  args.limit, args.offset, args.session), 0
@@ -357,8 +377,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(content, end="")
             return 0
-        store = Store(args.home)
-        result, code = execute(args, store)
+        if args.action in ("watch-status", "watch-stop"):
+            seconds = args.wait_ready if args.action == "watch-status" else args.wait
+            result, code = control_command(args.home, args.control, stop=args.action == "watch-stop", seconds=seconds)
+        else:
+            store = Store(args.home)
+            result, code = execute(args, store)
         # Child stdout stays untouched, including when --json is used.
         tracking = tracking_summary(store, result['session']) if not args.json and args.action in ('run','watch') else None
         emit(result, args.json, sys.stderr if args.action == "run" else sys.stdout,

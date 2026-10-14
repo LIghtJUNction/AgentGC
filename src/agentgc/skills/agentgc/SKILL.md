@@ -1,6 +1,6 @@
 ---
 name: agentgc
-description: Use proactively before editing code or documents and BEFORE any local file-writing work (even a tiny code/doc edit, build, test, dependency install, script, download or generated artifact) and AGAIN at task completion to classify outputs and flag disk growth. Also use for disk-space complaints, system-wide marking, cleanup, and swelling target, node_modules, .venv, build/dist, caches or logs, even without an explicit tracking request. Track first, preserve deliverables, mark uncertain size hotspots for review; thresholds never authorize deletion. Skip read-only explanations and remote-only operations.
+description: Use proactively before editing code or documents and BEFORE any local file-writing work (even a tiny code/doc edit, build, test, dependency install, script, download or generated artifact) and AGAIN at task completion to classify outputs and flag disk growth. Also use for disk-space complaints, system-wide marking, cleanup, and swelling target, node_modules, .venv, build/dist, caches or logs, even without an explicit tracking request. Track first; reuse a ready background watcher across engineering work, preferring native events and one-shot lifecycle waits over repeated status calls. Preserve deliverables and review byte/inode pressure; thresholds never authorize deletion. Skip read-only explanations and remote-only operations.
 ---
 
 # AgentGC
@@ -14,10 +14,13 @@ about garbage. This includes small source/document edits, builds, tests,
 package installations, scripts, and generated deliverables. Read-only questions,
 code inspection, and remote-only work do not need a local watcher.
 
-Inspect `agcc --version` and `agcc --json sessions` first. If a known live
-wrapper already covers the task's roots and state directory, reuse it rather
-than starting nested watchers. `AGENTGC_SESSION` is a hint, not proof that a
-wrapper is still alive. Do not stop watchers belonging to other tasks.
+Inspect `agcc --version` first. For a known control, inspect `agcc watch-status
+CONTROL` once (use `--json` for coverage decisions). Otherwise use a small
+`agcc --rows 5 sessions` discovery query, not repeated full JSON dumps. Reuse a
+confirmed live watcher/wrapper only with the same state home, covering roots
+and compatible exclusions. `AGENTGC_SESSION` is a hint, not proof of liveness.
+Legacy controls lack exclusion evidence; verify their original configuration
+or report unknown coverage. Do not stop watchers belonging to other tasks.
 
 Tracking is the default workflow, not permission to scan the whole home
 folder or clean anything. Select the project and known output directories.
@@ -38,20 +41,35 @@ yourself through the execution tool. Do not make the user open another terminal
 when background execution is available. On POSIX shells, for example:
 
 ```sh
-control="task-$(python -c 'import uuid; print(uuid.uuid4().hex)')"
-log=$(mktemp "${TMPDIR:-/tmp}/agentgc-watch.XXXXXX")
+control="task-$(python -B -c 'import uuid; print(uuid.uuid4().hex)')"
+log="$PWD/.agcc-watch-$control.log"
 nohup agcc watch --root "$PWD" --agent assistant --control "$control" \
   --duration 3600 > "$log" 2>&1 < /dev/null &
+agcc --json watch-status "$control" --wait-ready 30
 ```
 
-Retain the control name, log path, and state directory in task context. Use the
-same `--home` for every related command if overriding the default. A controlled
-watcher publishes `<state-home>/watches/<control>/ready.json` **after** the
-baseline succeeds. Obtain the state-home from `agcc --json doctor`. Read and
-parse readiness, then check that its session is running before writing files.
-Wait with a short bounded timeout (for example 10 seconds); if readiness fails,
-inspect the log and report the gap. Do not treat a background PID or a running
-session row alone as proof that the baseline has completed.
+Retain the control name, log path, and state directory in task context. Keep the
+log in a selected root; its creation is a bootstrap artifact before readiness,
+not proof of prior coverage. Use the same `--home` for related commands when
+overriding the default. Successful baseline metadata is published atomically
+as `<state-home>/watches/<control>/ready.json`. `watch-status --wait-ready` waits
+locally and emits one result, using existing state without taking the baseline's
+write lock or initializing a new database; opening counts toward the deadline.
+The status includes the state home; use `agcc --json doctor` for exact integrity
+diagnostics only when needed, not in the readiness loop.
+Check its exit code, `ready`, `roots`, `excludes`,
+`coverage_known`, `gaps` and expiry before writing. Use a finite timeout suitable
+for the baseline (up to 300 seconds). Failure needs log inspection and an explicit
+gap report. A PID, fresh heartbeat or running row is not proof of full coverage.
+
+Once ready, leave this watcher in the background across code edits, builds,
+tests and other task phases. Do not query it before every tool call, restart it
+for each operation, or repeat unchanged pressure scans. Check health at phase
+boundaries or when coverage/liveness is uncertain. Linux idle native waits are
+event-driven, with bounded heartbeat/reconciliation maintenance; private stop
+events and signals wake them promptly. Empty events do not start write
+transactions. CLI readiness/finalization waits use bounded local backoff, not
+repeated agent tool calls. Polling and short waits remain explicit fallbacks.
 
 Controlled watchers default to a 3600-second limit. Choose an appropriate
 explicit duration; if it expires mid-task, report the gap and start a new
@@ -73,7 +91,7 @@ without permission. Do not record API keys or secrets in agent names or notes.
 
 Prefer default compact Markdown for agent inspection to avoid dumping repetitive
 JSON fields. Use `--json` only for programmatic parsing, exact raw metadata, or
-raw metadata. Markdown defaults to 20 routine rows with explicit omission counts;
+coverage decisions. Markdown defaults to 20 routine rows with explicit omission counts;
 use `--rows N` to reduce output, or `--details` for all returned Markdown rows.
 Details mode does not expand query limits or expose every raw field. Retain
 original filters and paginate list/search/history using the displayed offset.
@@ -108,16 +126,18 @@ Do not fill in missing source, size, or history from guesses.
 Request a stop only for the watcher you started:
 
 ```sh
-agcc watch-stop "$control"
-agcc sessions
+agcc watch-stop "$control" --wait 30
 agcc list --session SESSION_ID --sort time --limit 20
 agcc history --session SESSION_ID --limit 20
 ```
 
 `watch-stop` is a cooperative request, not immediate completion and not cleanup
-permission. Wait for that session to finish its final scan and leave `running`
-with a short bounded timeout. If it fails, is interrupted, or remains running,
-report the status and any gaps. Do not call `end-session` to manufacture success.
+permission. `--wait` waits locally for finalization and emits one result; normal
+completion returns zero. If it fails, is interrupted, times out or remains
+running, report the status and gaps. Inspect that control once if diagnosis is
+needed, not the entire session list in a loop. Never call `end-session` to
+manufacture success. Preserve the index and classify the known bootstrap log
+as `temporary`; it is not automatically authorized for removal.
 A wrapper used with `run` ends its own tracking; it does not need `watch-stop`.
 
 Inspect session history to distinguish baseline observations from changes;
@@ -174,7 +194,8 @@ Defaults are review thresholds, not deletion rules:
 - `.agentgc-quarantine`: 1 MiB prompts recovery/retention review; never delete payloads directly.
 - `Backups`, `docker`, `containers`: 5 GiB prompts protected-storage review; backups, images and volumes are not disposable by name.
 - Any candidate directory with >=100000 files: review small-file proliferation even below byte thresholds (`--file-threshold` overrides it).
-- Filesystem usage >=80% or free space <5 GiB: flag risk. >=90% or <2 GiB: urgent attention. Also compare expected build size against actual headroom.
+- Filesystem byte usage >=80% or free space <5 GiB: flag risk. >=90% or <2 GiB: urgent attention. Compare expected build size with actual headroom.
+- Inode usage >=80%: review; >=90%: urgent, even when byte space is healthy. `pressure`/`sync` sample current-user usable free inodes once per selected filesystem, without extra traversal. `inode_status=unsupported` (including Btrfs without fixed capacity) or `unknown` means counts are unavailable, not zero or safe. Directory file counts are a separate growth signal, not remaining inode capacity.
 
 Where reliable before/after measurements exist, flag growth of at least 256 MiB
 AND 25% during a task even below the absolute threshold. Do not fabricate a
