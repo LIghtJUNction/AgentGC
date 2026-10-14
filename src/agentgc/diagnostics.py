@@ -22,6 +22,16 @@ def classify(detail: str) -> tuple[str, str]:
 
 
 def summarize(store, session: str) -> dict:
+    # One read snapshot: concurrent tracking/pruning must not mix counters from
+    # different moments. A savepoint also preserves a caller's outer transaction.
+    store.db.execute('SAVEPOINT diagnostic_summary')
+    try:
+        return _summarize(store, session)
+    finally:
+        store.db.execute('RELEASE diagnostic_summary')
+
+
+def _summarize(store, session: str) -> dict:
     row = store.db.execute('SELECT id,status,gaps,backend FROM sessions WHERE id=?', (session,)).fetchone()
     if row is None:
         raise SafetyError('No session with that ID')
@@ -32,6 +42,11 @@ def summarize(store, session: str) -> dict:
     ):
         category, impact = classify(item['detail'])
         groups.append({**dict(item), 'category': category, 'impact': impact})
+    category_counts = {}
+    retained_gaps = sum(g['count'] for g in groups)
+    for group in groups:
+        for category in group['category'].split(', '):
+            category_counts[category] = category_counts.get(category, 0) + group['count']
     unresolved = [dict(r) for r in store.db.execute(
         "SELECT kind,COUNT(*) events,COUNT(DISTINCT path) paths FROM events "
         "WHERE session_id=? AND kind LIKE '%-unresolved' GROUP BY kind ORDER BY kind", (session,)
@@ -40,6 +55,11 @@ def summarize(store, session: str) -> dict:
         "SELECT COUNT(DISTINCT path) FROM events WHERE session_id=? AND kind LIKE '%-unresolved'", (session,)
     ).fetchone()[0]
     return {**dict(row), 'groups': groups, 'unresolved': unresolved,
+            'categories': [{'category': key, 'events': count}
+                           for key, count in sorted(category_counts.items())],
+            'retained_gap_events': retained_gaps,
+            'missing_gap_details': row['gaps'] - retained_gaps if row['gaps'] >= retained_gaps else None,
+            'gap_count_consistent': row['gaps'] >= retained_gaps,
             'retained_unresolved_events': sum(r['events'] for r in unresolved),
             'unresolved_paths': paths,
-            'note': 'Gap categories are hints derived from retained text, not verified causes. Retained events, not lost files. Repeated notices may share paths. Deleted notices can reflect normal removal; creation/modification notices lack metadata when paths disappear. Causes and writer identity are unknown. Pruned history is not included; zero counts do not prove complete tracking.'}
+            'note': 'Gap categories are hints derived from retained text, not verified causes. Retained events, not lost files. Repeated notices may share paths. Deleted notices can reflect normal removal; creation/modification notices lack metadata when paths disappear. Causes and writer identity are unknown. Category counts overlap for compound records; do not sum them as distinct gaps. Missing gap details compare the cumulative counter with retained records; their causes are unknown, not proof of pruning. A retained count above the counter is inconsistent, not negative missing history. Pruned history is not included; zero counts do not prove complete tracking.'}

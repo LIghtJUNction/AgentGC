@@ -237,7 +237,11 @@ all files were marked. New regular files register immediately as manual-observat
 not writer-attributed history. Missing/quarantined records and disposable safety
 checks remain protected. Diagnostics group retained evidence with text-derived
 category/impact hints; unresolved events and distinct paths are not lost-file counts.
-Do not infer normal uninstall intent from disappearance alone.
+Do not infer normal uninstall intent from disappearance alone. Compare cumulative
+`gaps` with `retained_gap_events` and `missing_gap_details`; missing detail has
+unknown causes and impacts. `gap_count_consistent=false` signals inconsistent
+counters, not negative missing history. Category counts overlap for compound
+records; never sum them as distinct gaps or lost files.
 
 `temporary` and `review` are NOT cleanup permission. Never mark files
 `disposable` based only on their name, age, size, location, or origin.

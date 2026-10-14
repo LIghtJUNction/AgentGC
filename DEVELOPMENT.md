@@ -37,6 +37,13 @@ payload compatibility is preserved. No refresh bypasses disposable digest or
 changed-index checks. `diagnostics.py` groups identical retained gap texts and
 unresolved notice kinds, with distinct path counts and conservative text-derived
 impact hints. It never equates notices with lost files or infers uninstall intent.
+Category rollups count compound records in each matching category, without
+inflating retained gap totals. Cumulative counters are compared with retained
+records to expose missing detail, not infer its cause. Excess retained records
+are inconsistent, with a null missing-detail count. A read savepoint keeps all
+counts in one snapshot, preserves outer transactions, and works on read-only
+connections. `tests/test_diagnostic_retention.py` covers compound counts, missing
+and inconsistent history, concurrent writers, read-only use and nested transactions.
 `tests/test_usability.py` covers immediate registration, batch/list/stdin input,
 partial failures, transactional rollback, link/internal/session protections,
 changed disposable refusal and grouped evidence in isolated workspaces.

@@ -144,7 +144,15 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         lines.append('- Automatic suggestions are separate from manual labels; not cleanup permission.')
 
     def diagnostic(row):
-        summary(row, ('id','status','backend','gaps','retained_unresolved_events','unresolved_paths','note'))
+        summary(row, ('id','status','backend','gaps','retained_gap_events','missing_gap_details',
+                      'gap_count_consistent','retained_unresolved_events','unresolved_paths','note'))
+        if row.get('missing_gap_details'):
+            lines.append('- **Missing history**: some counted gaps have no retained detail; their categories and impacts are unknown.')
+        if row.get('gap_count_consistent') is False:
+            lines.append('- **Inconsistent evidence**: retained gap records exceed the cumulative session counter.')
+        if row.get('categories'):
+            lines.append('### Gap categories (overlapping counts)')
+            rows(row['categories'], ('category','events'), limit=None)
         rows(row.get('groups', []), ('category','count','first_seen','last_seen','impact','detail'), limit=None)
         rows(row.get('unresolved', []), ('kind','events','paths'), limit=None)
 
