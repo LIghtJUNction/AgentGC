@@ -286,3 +286,7 @@ python tools/benchmark.py --files 5000
 For development without installation: `PYTHONPATH=src python -m agentgc --help` (POSIX shells). CI is configured for Python 3.11 and 3.13 on Linux, macOS, and Windows. Platform-specific tests explicitly skip where unsupported; a configured CI matrix does not mean an untested platform has been verified.
 
 Tests cover file changes, queries, label invalidation, content-digest checks, link protection, Git protection, session conflicts, quarantine and restore, interrupted operations, command exit codes, real child processes, Linux native events, and file tags. See [DEVELOPMENT.md](DEVELOPMENT.md) for reproduction steps and implementation boundaries.
+
+## License
+
+Original materials that their rights holders can license are offered under the [Agent Upstream License (AUL) 1.0-draft.1](LICENSE). Separately licensed third-party material retains its original terms. See [AGENTS.md](AGENTS.md) and [UPSTREAM.toml](UPSTREAM.toml). AUL is a custom draft, not an OSI-approved open-source license.

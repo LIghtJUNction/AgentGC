@@ -1,0 +1,7 @@
+# AUL upstream election authorized by the owner of this original repository.
+# A newly created fork does not inherit independence automatically.
+schema_version = 1
+license = "LicenseRef-AUL-1.0-draft.1"
+repository = "https://github.com/LIghtJUNction/AgentGC"
+mode = "independent"
+upstream = "https://github.com/LIghtJUNction/AgentGC"
