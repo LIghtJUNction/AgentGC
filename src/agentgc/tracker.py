@@ -77,34 +77,52 @@ class Tracker:
     def scan(self, source: str = "session-correlated") -> None:
         token = str(uuid.uuid4())
         self.errors = []
-        with self.store.transaction():
-            for root in self.scope.roots:
-                for path in self.scope.walk(root, self.errors):
-                    self.sync(path, source, token)
-            # A failed walk is not evidence of deletion. Suppress all missing-file
-            # reconciliation for this pass rather than erasing inaccessible paths.
-            if not self.errors:
-                # POSIX uses path-index ranges. Windows scope comparisons are
-                # case-insensitive but this index is BINARY; retain the previous
-                # query there until a compatible normalized index exists.
-                # Root columns may reflect an older scope on either platform.
-                for root in ([None] if sys.platform == "win32" else self.scope.roots):
-                    if root is None:
-                        rows = self.store.db.execute(
-                            "SELECT path FROM files WHERE present=1 AND (scan_token IS NULL OR scan_token<>?)",
-                            (token,)
-                        )
-                    else:
+        # Walk outside the write transaction and bound each commit. A full tree
+        # scan used to monopolize the shared WAL writer for longer than the busy
+        # timeout, killing otherwise healthy watchers in unrelated directories.
+        batch_size = 128
+        batch: list[Path] = []
+        for root in self.scope.roots:
+            for path in self.scope.walk(root, self.errors):
+                batch.append(path)
+                if len(batch) == batch_size:
+                    with self.store.transaction():
+                        for candidate in batch:
+                            self.sync(candidate, source, token)
+                    batch.clear()
+        if batch:
+            with self.store.transaction():
+                for candidate in batch:
+                    self.sync(candidate, source, token)
+        # Partial commits do not make an incomplete walk evidence of deletion.
+        if not self.errors:
+            # POSIX keeps indexed path ranges; Windows needs its case-insensitive
+            # fallback. Materialize bounded pages so no read cursor/snapshot spans
+            # commits. Re-stat candidates under the write lock before deletion.
+            for root in ([None] if sys.platform == "win32" else self.scope.roots):
+                after = ""
+                while True:
+                    where = "path>? AND present=1 AND (scan_token IS NULL OR scan_token<>?)"
+                    params: tuple = (after, token)
+                    if root is not None:
                         prefix = str(root).rstrip(os.sep) + os.sep
                         upper = prefix[:-1] + chr(ord(os.sep) + 1)
-                        rows = self.store.db.execute(
-                            "SELECT path FROM files WHERE path>=? AND path<? AND present=1 "
-                            "AND (scan_token IS NULL OR scan_token<>?)", (prefix, upper, token)
-                        )
-                    for row in rows:
-                        path = Path(row["path"])
-                        if self.scope.includes(path):
-                            self.sync(path, source, token)
+                        where += " AND path>=? AND path<?"
+                        params += (prefix, upper)
+                    rows = self.store.db.execute(
+                        "SELECT path FROM files WHERE " + where + " ORDER BY path LIMIT ?",
+                        (*params, batch_size),
+                    ).fetchall()
+                    if rows:
+                        with self.store.transaction():
+                            for row in rows:
+                                path = Path(row["path"])
+                                if self.scope.includes(path):
+                                    self.sync(path, source, token)
+                        after = rows[-1]["path"]
+                    if len(rows) < batch_size:
+                        break
+        with self.store.transaction():
             if self.errors:
                 self.gap("Incomplete scan: " + "; ".join(self.errors))
             else:
@@ -248,8 +266,16 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-    except BaseException:
+    except BaseException as exc:
         code = 1
+        # Final reconciliation cannot recover intermediate history lost on error.
+        # Never turn a failed tracker into a misleading zero-gap session.
+        detail = f"Tracking interrupted by {type(exc).__name__}; intermediate history may be incomplete"
+        try:
+            with store.transaction():
+                tracker.gap(detail)
+        except BaseException:
+            print(f"- agcc gap (not persisted): {inline(detail)}", file=sys.stderr)
         if process is not None and process.poll() is None:
             process.terminate()
             try:

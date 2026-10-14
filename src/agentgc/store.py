@@ -85,18 +85,34 @@ class Store:
             return
         self.db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA busy_timeout=10000")
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=FULL")
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        try:
+            self.db.execute("PRAGMA busy_timeout=10000")
+            # Reopening an initialized WAL store must not acquire a writer lock.
+            if self.db.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+                self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=FULL")
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1):
+                raise SafetyError(f"Unsupported database version: {version}")
+            statements = [statement.strip() for statement in SCHEMA.split(";") if statement.strip()]
+            # Schema-v1 has additive indexes too. Check catalog metadata without
+            # a write lock, but retain upgrades for older initialized stores.
+            expected = {statement.split()[5] for statement in statements}
+            existing = {row[0] for row in self.db.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+            )}
+            if version == 0 or not expected.issubset(existing):
+                # Publish the version only after all initialization is durable.
+                with self.transaction():
+                    for statement in statements:
+                        self.db.execute(statement)
+                    self.db.execute("INSERT OR IGNORE INTO meta VALUES ('id', ?)", (str(uuid.uuid4()),))
+                    self.db.execute("PRAGMA user_version=1")
+            if os.name != "nt":
+                self.path.chmod(0o600)
+        except BaseException:
             self.db.close()
-            raise SafetyError(f"Unsupported database version: {version}")
-        self.db.executescript(SCHEMA)
-        self.db.execute("PRAGMA user_version=1")
-        self.db.execute("INSERT OR IGNORE INTO meta VALUES ('id', ?)", (str(uuid.uuid4()),))
-        if os.name != "nt":
-            self.path.chmod(0o600)
+            raise
 
     def tag_payload(self, file_id: int, label: str, source: str, session: str | None = None) -> dict:
         db_id = self.db.execute("SELECT value FROM meta WHERE key='id'").fetchone()[0]

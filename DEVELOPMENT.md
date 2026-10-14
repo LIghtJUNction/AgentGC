@@ -4,6 +4,10 @@
 
 `paths.py` controls roots, exclusions, link checks, and streaming digests.
 `store.py` owns the SQLite schema, transactions, sessions, queries, and events.
+Opening a complete initialized WAL store checks schema metadata without acquiring
+an initialization writer lock. Missing schema-v1 objects still receive additive
+upgrades; fresh initialization publishes its version in the schema transaction.
+Initialization errors close the connection.
 Control clients use its existing-database read-only mode, with no schema writes,
 migration, directory creation or writer-lock wait. Database opening counts toward
 client wait deadlines; missing/version-zero initialization remains pending.
@@ -178,6 +182,17 @@ retain short waits with a warning. Command wrappers still bound child-exit
 checks, and polling platforms keep their scan behavior. Empty native reads do
 not begin write transactions. Private control notifications only wake durable
 stop checks, never become user-file evidence. They count toward watch limits.
+
+Scans walk outside write transactions and commit at most 128 file observations
+per batch; missing-file candidates use bounded keyset pages with no live read
+cursor spanning commits. Each candidate is re-statted under the write lock.
+Partial batches remain committed if a later step fails; incomplete walks still
+suppress missing-file reconciliation. This is not an atomic filesystem snapshot.
+Tracking exceptions retain a gap even if final reconciliation succeeds; if the
+store is still unavailable, stderr explicitly reports the unpersisted gap.
+`tests/test_store_contention.py` exercises shared-store writer access during
+walking, bounded batches, opening under a held WAL writer, paginated deletion,
+incomplete-scan protection and exception gap reporting in isolated directories.
 
 An unchanged scan writes scan tokens but creates no file change events.
 POSIX missing-file queries use indexed path ranges rather than a shared-store-wide
