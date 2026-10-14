@@ -122,7 +122,17 @@ agcc sessions
 agcc stats
 agcc mark path/to/result keep --note "Final result needed for delivery"
 agcc mark path/to/scratch temporary --note "Not yet approved for cleanup"
+agcc mark result.json receipt.json keep --note "Deliverables"
+agcc mark temporary --files-from paths.txt --note "Intermediate files; not cleanup permission"
+find ./outputs -type f -print0 | agcc mark review --files-from - --null
+agcc diagnostics --session SESSION_ID
 ```
+
+`mark` accepts multiple explicit paths or a UTF-8 newline list (`--files-from -` reads stdin; `--null` uses NUL delimiters for names containing newlines). Relative paths use the current directory; no glob expansion or recursive traversal is performed. Each file commits independently; failures do not stop other files, are reported individually, and cause exit code 1. Single-path syntax and JSON file records remain compatible.
+
+New regular files are indexed immediately using metadata only, with source `manual-observation` and no writer/session attribution. This does not scan parents or recover past history. Links, directories and internal state are refused; missing/quarantined index entries still require reconciliation. Disposable notes, live-session/Git/hard-link protections, hashes and changed-index checks remain intact.
+
+`diagnostics --session` groups identical retained gap details, showing counts, first/last occurrence and impact. Permission, link-boundary, disappeared-path and event-loss-risk categories are text-derived hints, not verified causes; compound records retain all matching categories and original detail. It never guesses that a disappearance was a normal uninstall. Unresolved notices are grouped by kind, with event counts and distinct path counts: **neither is a lost-file count**. Deletion notices can reflect normal removal; creation/modification notices can lack metadata after paths vanish. Final scans only recover surviving state. Pruned history is not included. Default run/watch summaries include these diagnostics without changing their raw JSON payloads or removing original evidence.
 
 Time sorting uses the most recently observed change. Activity is the cumulative count of observed file-state changes, not read access. Byte totals in `stats` are the logical sizes of existing regular files; hard links may be counted more than once. These totals are not physical disk usage.
 

@@ -9,7 +9,7 @@ import subprocess
 import time
 import uuid
 
-from .paths import INTERNAL_NAMES, SafetyError, absolute, digest, no_links, regular
+from .paths import INTERNAL_NAMES, SafetyError, absolute, digest, no_links, regular, signature
 from .store import LABELS, Store
 from .tags import write_tag
 
@@ -47,9 +47,23 @@ def allowed_path(store: Store, path: Path) -> None:
 def mark(store: Store, path: Path, label: str, note: str = "", tag_files: bool = False) -> dict:
     if label not in LABELS:
         raise SafetyError(f"Unknown label: {label}")
+    # Check the lexical path before absolute() resolves parent aliases.
+    no_links(Path(os.path.abspath(os.path.expanduser(path))))
     path = absolute(path)
     with store.transaction():
-        row = store.file(path)
+        row = store.db.execute("SELECT * FROM files WHERE path=?", (str(path),)).fetchone()
+        if row is None:
+            if path.is_relative_to(store.home) or any(p in INTERNAL_NAMES for p in path.parts):
+                raise SafetyError("Internal state and Git metadata are protected")
+            info = regular(path)
+            now = time.time()
+            cursor = store.db.execute(
+                "INSERT INTO files(path,root,size,signature,first_seen,changed,activity,source) "
+                "VALUES(?,?,?,?,?,?,1,?)",
+                (str(path), str(path.parent), info.st_size, signature(info), now, now, "manual-observation"),
+            )
+            store.event(str(path), "observed", "manual-observation", file_id=cursor.lastrowid, size=info.st_size)
+            row = store.file(path)
         if not row["present"]:
             raise SafetyError("Cannot mark a missing or quarantined file")
         review_sig = review_hash = None

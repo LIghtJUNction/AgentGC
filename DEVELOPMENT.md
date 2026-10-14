@@ -19,6 +19,16 @@ hard link in the private local state directory; unsupported filesystems fail
 visibly rather than exposing partial JSON. Records are bounded to 4096 bytes.
 `tags.py` writes optional platform metadata. Tags are never trusted input.
 `cleanup.py` handles review, quarantine, restore, and recovery records.
+Manual marks register only explicitly selected new regular files in the same
+transaction as the label, using manual-observation without session attribution.
+Batch CLI marks commit independently and report partial failures; single-file
+payload compatibility is preserved. No refresh bypasses disposable digest or
+changed-index checks. `diagnostics.py` groups identical retained gap texts and
+unresolved notice kinds, with distinct path counts and conservative text-derived
+impact hints. It never equates notices with lost files or infers uninstall intent.
+`tests/test_usability.py` covers immediate registration, batch/list/stdin input,
+partial failures, transactional rollback, link/internal/session protections,
+changed disposable refusal and grouped evidence in isolated workspaces.
 `cli.py` parses commands and dispatches output. The bundled skill is package data.
 `output.py` renders compact, escaped Markdown without mutating command results.
 JSON retains original payloads and query limits. Routine rows have a visible

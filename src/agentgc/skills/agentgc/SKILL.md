@@ -225,7 +225,19 @@ volumes, databases, active dependencies, unique backups and recovery records.
 ```sh
 agcc mark path/to/result keep --note "Final result needed by the user"
 agcc mark path/to/scratch temporary --note "Intermediate output; not reviewed for removal"
+agcc mark result.json receipt.json keep --note "Deliverables"
+agcc mark temporary --files-from paths.txt --note "Intermediate outputs; not cleanup permission"
+agcc diagnostics --session SESSION_ID
 ```
+
+Mark multiple explicit files in one call; UTF-8 lists use current-directory
+relative paths (`--files-from -` reads stdin, `--null` supports NUL separators).
+Batch failures are per-path and return nonzero; inspect them rather than assuming
+all files were marked. New regular files register immediately as manual-observation,
+not writer-attributed history. Missing/quarantined records and disposable safety
+checks remain protected. Diagnostics group retained evidence with text-derived
+category/impact hints; unresolved events and distinct paths are not lost-file counts.
+Do not infer normal uninstall intent from disappearance alone.
 
 `temporary` and `review` are NOT cleanup permission. Never mark files
 `disposable` based only on their name, age, size, location, or origin.

@@ -140,6 +140,11 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
             rows(row['notifications'], ('path','rule_id','action','message','state','evaluation'))
         lines.append('- Automatic suggestions are separate from manual labels; not cleanup permission.')
 
+    def diagnostic(row):
+        summary(row, ('id','status','backend','gaps','retained_unresolved_events','unresolved_paths','note'))
+        rows(row.get('groups', []), ('category','count','first_seen','last_seen','impact','detail'), limit=None)
+        rows(row.get('unresolved', []), ('kind','events','paths'), limit=None)
+
     if isinstance(data, list):
         if command == 'auto-marks':
             lines.append(f'- Returned={len(data)}; active={sum(r.get("state") == "active" for r in data)}; unknown={sum(r.get("evaluation") == "unknown" for r in data)}.')
@@ -157,7 +162,13 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         if command in ('reviews','auto-marks'):
             lines.append('- Historical observations; remeasure before acting. Not cleanup permission.')
     elif isinstance(data, dict):
-        if data.get('error'):
+        if command == 'diagnostics':
+            diagnostic(data)
+        elif command == 'mark' and 'items' in data:
+            summary(data, ('marked','failed'))
+            rows(data['items'], ('path','label','note','tag_status'))
+            warnings(data)
+        elif data.get('error'):
             warnings(data)
         elif command == 'gc':
             items = data.get('items', [])
@@ -205,7 +216,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
                 if tracking is None:
                     lines.append('- Tracking gaps: unavailable; query `history --session`/`sessions`.')
                 else:
-                    summary(tracking, ('status','backend','gaps','retained_unresolved_events'))
+                    diagnostic(tracking)
                     lines.append('- Recorded counts only; zero does not prove complete history or writer identity.')
             if command == 'watch-stop':
                 if data.get('status') == 'finished':

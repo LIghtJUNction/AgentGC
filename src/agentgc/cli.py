@@ -21,6 +21,7 @@ from .watch_control import WatchControl, control_command, request_stop, wait_sta
 from .rules import load as load_rules, matches
 from .sync import reconcile, marks as automatic_marks, table_exists
 from .output import DISPLAY_LIMIT, markdown
+from .diagnostics import summarize
 
 
 def positive(value: str) -> float:
@@ -91,9 +92,13 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--session")
     cmd.add_argument("--limit", type=int, default=100)
     cmd.add_argument('--offset', type=int, default=0)
-    cmd = sub.add_parser("mark", help="classify an indexed file")
-    cmd.add_argument("path", type=Path)
+    cmd = sub.add_parser("diagnostics", help="group retained gaps and explain unresolved event impact")
+    cmd.add_argument('--session', required=True)
+    cmd = sub.add_parser("mark", help="classify explicit files; index new regular files immediately")
+    cmd.add_argument("paths", nargs='*', type=Path)
     cmd.add_argument("label", choices=LABELS)
+    cmd.add_argument('--files-from', type=Path, help='UTF-8 path list; - reads stdin; relative paths use current directory')
+    cmd.add_argument('--null', action='store_true', help='NUL-delimited path list instead of lines')
     cmd.add_argument("--note", default="")
     cmd.add_argument("--tag-files", action="store_true")
     cmd = sub.add_parser("gc", help="preview or quarantine explicitly reviewed disposable files")
@@ -157,9 +162,7 @@ def tracking_summary(store: Store, session: str) -> dict | None:
         row = store.db.execute('SELECT status,gaps,backend FROM sessions WHERE id=?', (session,)).fetchone()
         if row is None:
             return None
-        unresolved = store.db.execute("SELECT COUNT(*) FROM events WHERE session_id=? AND kind LIKE '%-unresolved'",
-                                      (session,)).fetchone()[0]
-        return {**dict(row), 'retained_unresolved_events': unresolved}
+        return summarize(store, session)
     except sqlite3.Error:
         return None  # unavailable is explicit; child exit codes must not change
 
@@ -252,8 +255,31 @@ def execute(args, store: Store) -> tuple[object, int]:
             values.append(args.session)
         sql = "SELECT * FROM events" + (" WHERE " + " AND ".join(terms) if terms else "")
         return [dict(r) for r in store.db.execute(sql + " ORDER BY id DESC LIMIT ? OFFSET ?", (*values, args.limit, args.offset))], 0
+    if action == 'diagnostics':
+        return summarize(store, args.session), 0
     if action == "mark":
-        return mark(store, args.path, args.label, args.note, args.tag_files), 0
+        paths = list(args.paths)
+        if args.null and args.files_from is None:
+            raise SafetyError('--null requires --files-from')
+        if args.files_from is not None:
+            if str(args.files_from) == '-':
+                text = sys.stdin.read()
+            else:
+                no_links(Path(args.files_from).absolute())
+                text = args.files_from.read_text(encoding='utf-8')
+            paths.extend(Path(p) for p in (text.split('\0') if args.null else text.splitlines()) if p)
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            raise SafetyError('mark requires paths or --files-from')
+        if len(paths) == 1 and args.files_from is None:
+            return mark(store, paths[0], args.label, args.note, args.tag_files), 0
+        items, errors = [], []
+        for path in paths:
+            try:
+                items.append(mark(store, path, args.label, args.note, args.tag_files))
+            except (OSError, SafetyError) as exc:
+                errors.append({'path': str(path), 'reason': str(exc)})
+        return {'items': items, 'errors': errors, 'marked': len(items), 'failed': len(errors)}, 1 if errors else 0
     if action == "gc":
         if args.apply and not args.confirm_unused:
             raise SafetyError("--apply requires --confirm-unused; stop writers and review references first")

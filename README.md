@@ -122,7 +122,17 @@ agcc sessions
 agcc stats
 agcc mark path/to/result keep --note "需要交付的结果"
 agcc mark path/to/scratch temporary --note "尚未确认可以清理"
+agcc mark result.json receipt.json keep --note "本轮交付产物"
+agcc mark temporary --files-from paths.txt --note "中间文件，未授权清理"
+find ./outputs -type f -print0 | agcc mark review --files-from - --null
+agcc diagnostics --session SESSION_ID
 ```
+
+`mark` 支持多路径，以及 UTF-8 换行清单 `--files-from`（`-` 从 stdin 读取）；含换行的文件名使用 `--null` 的 NUL 分隔清单。清单中的相对路径相对于当前工作目录，不展开 glob、不递归目录。批量调用逐文件提交，失败不阻止其他路径；返回成功和失败数量、每个失败原因，部分失败退出码为 1。原来的单路径语法和 JSON 文件记录保持兼容。
+
+新普通文件可立即标记：仅登记明确指定的文件元数据，不扫描父目录，也不补造此前历史。来源为 `manual-observation`，没有写入者或跟踪会话归属。拒绝链接、目录和内部状态；仍不允许直接重标缺失或隔离记录。`disposable` 的备注、活跃会话、Git、硬链接、摘要及已索引文件变化检查保持不变。
+
+`diagnostics --session` 按相同缺口详情合并重复记录，展示次数、首末时间及影响说明；权限、链接边界、路径消失、事件溢出等分类由已有文本推导，仅是排查提示，不能断定正常卸载或临时文件。复合记录保留多个匹配分类及原始详情。未解析事件按种类汇总，并区分事件数和不同路径数：它们**不是丢失文件数**，删除通知可能是正常移除，创建／修改通知可能缺少已消失路径的元数据。最终扫描只能恢复仍存在的状态；历史清理后只汇总尚保留记录。`run/watch` 默认摘要也展示这些诊断，JSON 原返回字段不变。不会自动删除或淡化原始缺口。
 
 时间排序使用最近观察到的变化时间。活跃程度是累计观察到的文件状态变化次数，不是读访问次数。`stats` 的字节数是现存普通文件的逻辑大小；硬链接可能重复计数，不等于实际磁盘占用。
 
