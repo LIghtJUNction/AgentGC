@@ -55,7 +55,7 @@ def conditions(rule, item, previous, ratio=1):
 
 
 def reconcile(store, config, roots, dry_run=False, max_entries=None, max_seconds=None,
-              include=None, excludes=None, overrides=None):
+              include=None, excludes=None, overrides=None, disk_role='auto'):
     project = Path(config['project'])
     roots = [absolute(r) for r in roots]
     if any(not r.is_relative_to(project) for r in roots):
@@ -66,7 +66,8 @@ def reconcile(store, config, roots, dry_run=False, max_entries=None, max_seconds
     rules = effective['rules']
     result = inventory(roots, max_entries=config['limits']['max_entries'] if max_entries is None else max_entries,
                        max_seconds=config['limits']['max_seconds'] if max_seconds is None else max_seconds, state_home=store.home,
-                       select=lambda p,k: any(matches(r,p,k,project) for r in rules), include=include)
+                       select=lambda p,k: any(matches(r,p,k,project) for r in rules), include=include,
+                       disk_role=disk_role)
     identity = {'project': str(project), 'roots': sorted(result['roots']), 'excludes': sorted(excludes or []),
                 'measurement': 'logical-bytes-v1'}
     scope = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

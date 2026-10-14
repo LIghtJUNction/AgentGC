@@ -7,7 +7,9 @@ import re
 import unicodedata
 
 DISPLAY_LIMIT = 20
-DISK_FIELDS = ('root','used_percent','free_bytes','inode_status','total_inodes','free_inodes',
+DISK_FIELDS = ('root','disk_role','disk_role_source','capacity_status','capacity_reason',
+               'total_bytes','used_percent','free_bytes','attention_free_bytes','urgent_free_bytes',
+               'byte_attention','byte_urgent','inode_status','total_inodes','free_inodes',
                'inode_used_percent','inode_attention','inode_urgent','inode_reason','attention','urgent')
 
 
@@ -54,7 +56,8 @@ def fields(row, names) -> str:
             continue
         if name == 'path':
             parts.append(inline(value))
-        elif name in ('size', 'bytes', 'state_bytes', 'free_bytes', 'bytes_to_quarantine', 'bytes_freed'):
+        elif name in ('size', 'bytes', 'state_bytes', 'total_bytes', 'free_bytes',
+                      'attention_free_bytes', 'urgent_free_bytes', 'bytes_to_quarantine', 'bytes_freed'):
             parts.append(f"{name}={size(value)}")
         elif isinstance(value, dict):
             parts.append(f"{name}: " + ", ".join(f"{inline(k)}={inline(v)}" for k,v in value.items()))

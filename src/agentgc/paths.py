@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import hashlib
 import os
@@ -112,7 +113,8 @@ class Scope:
             for pattern in self.excludes
         )
 
-    def walk(self, root: Path, errors: list[str], directories: bool = False) -> Iterator[Path]:
+    def walk(self, root: Path, errors: list[str], directories: bool = False,
+             failed_paths: list[Path] | None = None) -> Iterator[Path]:
         """Stream a walk. Do not build a second in-memory file index."""
         stack = [root]
         while stack:
@@ -135,8 +137,12 @@ class Scope:
                             elif not directories and stat.S_ISREG(info.st_mode):
                                 yield path
                         except OSError as exc:
+                            if failed_paths is not None and (isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM)):
+                                failed_paths.append(path)
                             if len(errors) < 20:
                                 errors.append(f"{path}: {exc}")
             except (OSError, SafetyError) as exc:
+                if failed_paths is not None and isinstance(exc, OSError) and (isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM)):
+                    failed_paths.append(folder)
                 if len(errors) < 20:
                     errors.append(f"{folder}: {exc}")

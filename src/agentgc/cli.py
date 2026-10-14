@@ -119,6 +119,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check index health and recovery state")
     cmd = sub.add_parser("pressure", help="bounded directory size checks; thresholds flag review, never cleanup")
     cmd.add_argument("--root", action="append", required=True, type=Path)
+    cmd.add_argument('--disk-role', choices=('auto', 'general', 'boot'), default='auto',
+                     help='filesystem headroom policy for selected roots; auto detects conventional boot mounts')
     cmd.add_argument("--threshold", action="append", default=[], metavar="CATEGORY=MIB",
                      help="override review threshold in MiB (build, dependencies, cache, logs, quarantine, protected)")
     cmd.add_argument("--max-entries", type=int)
@@ -131,6 +133,7 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument('--root', action='append', type=Path)
         cmd.add_argument('--max-entries', type=int)
         cmd.add_argument('--max-seconds', type=positive)
+        cmd.add_argument('--disk-role', choices=('auto', 'general', 'boot'), default='auto')
         if name == 'sync':
             cmd.add_argument('--dry-run', action='store_true')
         else:
@@ -197,7 +200,7 @@ def execute(args, store: Store) -> tuple[object, int]:
     if action in ('sync','auto-mark'):
         result = reconcile(store, config, args.root or [Path(config['project'])],
                            dry_run=args.dry_run if action == 'sync' else not args.apply,
-                           max_entries=args.max_entries, max_seconds=args.max_seconds)
+                           max_entries=args.max_entries, max_seconds=args.max_seconds, disk_role=args.disk_role)
         return result, 0 if result['complete'] else 1
     if action in ("scan", "run", "watch"):
         scope = Scope(args.root or [Path.cwd()], store.home, args.exclude)
@@ -349,11 +352,12 @@ def execute(args, store: Store) -> tuple[object, int]:
             if limits or args.file_threshold is not None:
                 override['fingerprint'] = hashlib.sha256(json.dumps({k:v for k,v in override.items() if k != 'fingerprint'},sort_keys=True).encode()).hexdigest()
             result = reconcile(store,config,args.root,dry_run=not args.apply,
-                               max_entries=args.max_entries,max_seconds=args.max_seconds,overrides=override)
+                               max_entries=args.max_entries,max_seconds=args.max_seconds,overrides=override,
+                               disk_role=args.disk_role)
             return result, 0 if result['complete'] else 1
         result = inventory(args.root, limits, 200000 if args.max_entries is None else args.max_entries,
                            30 if args.max_seconds is None else args.max_seconds, store.home,
-                           100000 if args.file_threshold is None else args.file_threshold)
+                           100000 if args.file_threshold is None else args.file_threshold, disk_role=args.disk_role)
         if args.apply:
             result["saved_reviews"] = save_reviews(store, result)
             result["mode"] = "mark-review"

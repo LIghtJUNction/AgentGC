@@ -38,6 +38,7 @@ class FinalizationTests(unittest.TestCase):
     def observer(self):
         observer = Mock()
         observer.name = "fake-native"
+        observer.coverage_errors = []
         observer.pending.return_value = False
         return observer
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 from pathlib import Path
 import select
@@ -25,6 +26,7 @@ class Inotify:
         self.scope = scope
         self.max_watches = max_watches
         self.watches: dict[int, Path] = {}
+        self.coverage_errors: list[str] = []
         self.control_wd: int | None = None
         self.wake_fd: int | None = None
         self.lib = ctypes.CDLL(None, use_errno=True)
@@ -46,21 +48,43 @@ class Inotify:
     def refresh(self) -> None:
         visited: set[int] = set()
         errors: list[str] = []
+        failed_paths: list[Path] = []
+        existing_paths = {path: wd for wd, path in self.watches.items()}
         for root in self.scope.roots:
-            for path in self.scope.walk(root, errors, directories=True):
-                if len(visited) + (self.control_wd is not None) >= self.max_watches:
+            for path in self.scope.walk(root, errors, directories=True, failed_paths=failed_paths):
+                if (len(visited) + (self.control_wd is not None) >= self.max_watches or
+                        (path not in existing_paths and
+                         len(self.watches) + (self.control_wd is not None) >= self.max_watches)):
                     raise OSError(f"Watch limit ({self.max_watches}) reached; use --backend poll")
                 # IN_ONLYDIR | IN_DONT_FOLLOW protect watch registration.
                 wd = self.lib.inotify_add_watch(self.fd, os.fsencode(path), MASK | 0x01000000 | 0x02000000)
                 if wd < 0:
-                    raise OSError(ctypes.get_errno(), f"Cannot watch {path}")
+                    code = ctypes.get_errno()
+                    # Path-local failures must not discard healthy native watches.
+                    # Exhausted kernel resources and descriptor failures still fail.
+                    if code not in (errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                        raise OSError(code, f"Cannot watch {path}")
+                    if code in (errno.EACCES, errno.EPERM):
+                        failed_paths.append(path)
+                    if len(errors) < 20:
+                        errors.append(f"{path}: {OSError(code, os.strerror(code))}")
+                    continue
+                previous = existing_paths.get(path)
+                if previous is not None and previous != wd and previous in self.watches:
+                    self.lib.inotify_rm_watch(self.fd, previous)
+                    del self.watches[previous]
                 self.watches[wd] = path
                 visited.add(wd)
         for wd in self.watches.keys() - visited:
+            # Retain already registered watches beneath temporarily unreadable
+            # subtrees. Their coverage remains unknown, not proven complete.
+            if any(self.watches[wd].is_relative_to(p) for p in failed_paths):
+                continue
             self.lib.inotify_rm_watch(self.fd, wd)
             del self.watches[wd]
-        if errors:
-            raise OSError("; ".join(errors))
+        self.coverage_errors = errors
+        if not self.watches:
+            raise OSError("No readable native watch directories; " + "; ".join(errors))
 
     def watch_control(self, path: Path) -> None:
         """Wake for private control events without indexing state as user files."""
@@ -105,8 +129,12 @@ class Inotify:
                     continue
                 if wd == self.control_wd:
                     continue  # Durable stop requests are checked by the tracker.
+                if mask & 0x8000:  # IN_IGNORED: free budget and retry surviving paths.
+                    self.watches.pop(wd, None)
+                    rescan = True
+                    continue
                 folder = self.watches.get(wd)
-                if folder is None or mask & 0x8000:  # IN_IGNORED
+                if folder is None:
                     continue
                 path = folder / name if name else folder
                 if not self.scope.includes(path):

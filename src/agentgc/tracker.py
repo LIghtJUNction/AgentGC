@@ -171,6 +171,9 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
         tracker.scan("baseline")
         if tracker.errors:
             raise SafetyError("Baseline scan was incomplete; command was not started")
+        if observer and getattr(observer, 'coverage_errors', []):
+            tracker.gap("Partial native coverage; affected directories will be retried: " +
+                        "; ".join(observer.coverage_errors))
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_handlers[sig] = signal.signal(sig, stop)
         if observer and sys.platform.startswith("linux"):
@@ -248,9 +251,12 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
             due = interval if observer is None or pending_scan else reconcile
             if now - last_scan >= due:
                 tracker.scan()
-                if observer and pending_scan:
+                if observer and (pending_scan or getattr(observer, 'coverage_errors', [])):
                     try:
                         observer.refresh()
+                        if getattr(observer, 'coverage_errors', []):
+                            tracker.gap("Partial native coverage; affected directories will be retried: " +
+                                        "; ".join(observer.coverage_errors))
                     except OSError as exc:
                         tracker.gap(f"Native watch refresh failed; switching to polling: {exc}")
                         observer.close()
@@ -316,7 +322,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                     final_failed = True
             # Even a failed native read must not suppress reconciliation.
             tracker.scan()
-            final_failed |= bool(tracker.errors)
+            final_failed |= bool(tracker.errors) or bool(getattr(observer, 'coverage_errors', []))
         except BaseException:
             final_failed = True
             raise

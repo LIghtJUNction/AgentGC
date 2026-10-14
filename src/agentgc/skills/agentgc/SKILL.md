@@ -194,7 +194,7 @@ Defaults are review thresholds, not deletion rules:
 - `.agentgc-quarantine`: 1 MiB prompts recovery/retention review; never delete payloads directly.
 - `Backups`, `docker`, `containers`: 5 GiB prompts protected-storage review; backups, images and volumes are not disposable by name.
 - Any candidate directory with >=100000 files: review small-file proliferation even below byte thresholds (`--file-threshold` overrides it).
-- Filesystem byte usage >=80% or free space <5 GiB: flag risk. >=90% or <2 GiB: urgent attention. Compare expected build size with actual headroom.
+- Filesystem byte usage >=80%: flag risk; >=90%: urgent. General free-space thresholds are min(5 GiB, 10% of capacity) and min(2 GiB, 5%). Boot thresholds are min(64 MiB, 10%) and min(32 MiB, 5%). Auto detects conventional mounted /boot, /boot/efi or /efi on the selected device only. Use `--disk-role boot` for a known custom boot mount, or `general` to override, in pressure/sync/auto-mark. Separate different roles into separate calls. Inspect reported role/source/effective thresholds, not folder names alone. Unknown capacity is not zero or safe. Compare expected build size with actual headroom.
 - Inode usage >=80%: review; >=90%: urgent, even when byte space is healthy. `pressure`/`sync` sample current-user usable free inodes once per selected filesystem, without extra traversal. `inode_status=unsupported` (including Btrfs without fixed capacity) or `unknown` means counts are unavailable, not zero or safe. Directory file counts are a separate growth signal, not remaining inode capacity.
 
 Where reliable before/after measurements exist, flag growth of at least 256 MiB
@@ -282,6 +282,8 @@ Restore refuses to overwrite existing files. A restored file is marked
 If a digest differs or recovery needs review, stop and report the paths.
 
 ## Limits
+
+Linux keeps healthy native watches when local directories become unreadable and retries affected scope during reconciliation. Persistent partial coverage remains a gap and finalizes failed; do not call it complete. Global resource failures can still trigger polling. Incomplete startup baselines still refuse readiness/child start; incomplete scans cannot confirm deletion.
 
 Linux uses native events by default. macOS and Windows use polling. Polling
 can miss a file created and removed between scans. Native events can also

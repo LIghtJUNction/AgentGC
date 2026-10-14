@@ -56,10 +56,53 @@ def inode_usage(root: Path) -> dict:
             "inode_urgent": percent >= 90}
 
 
+def byte_pressure(root: Path, role: str = 'auto') -> dict:
+    """Capacity-scaled headroom; conventional boot mount detection is a hint."""
+    if role not in ('auto', 'general', 'boot'):
+        raise SafetyError('disk role must be auto, general or boot')
+    effective, source = ('general', 'default') if role == 'auto' else (role, 'explicit')
+    if role == 'auto':
+        # Never infer boot policy from a directory name alone: it must be a
+        # conventional mount point on the same selected filesystem/device.
+        try:
+            device = root.stat().st_dev
+            for ancestor in (root, *root.parents):
+                if (str(ancestor) in ('/boot', '/boot/efi', '/efi') and
+                        os.path.ismount(ancestor) and ancestor.stat().st_dev == device):
+                    effective, source = 'boot', 'conventional-boot-mount'
+                    break
+        except OSError:
+            source = 'default-mount-detection-unavailable'
+    result = {'disk_role': effective, 'disk_role_source': source,
+              'capacity_status': 'unknown', 'capacity_reason': None,
+              'total_bytes': None, 'used_percent': None, 'free_bytes': None,
+              'attention_free_bytes': None, 'urgent_free_bytes': None,
+              'byte_attention': None, 'byte_urgent': None}
+    try:
+        usage = shutil.disk_usage(root)
+        total, used, free = usage.total, usage.used, usage.free
+        if (any(type(n) is not int for n in (total, used, free)) or total <= 0 or
+                not 0 <= used <= total or not 0 <= free <= total):
+            return {**result, 'capacity_reason': 'invalid byte capacity counters'}
+    except (OSError, NotImplementedError) as exc:
+        return {**result, 'capacity_reason': 'byte metadata unavailable: ' + type(exc).__name__}
+    percent = 100 * used / total
+    attention_floor, urgent_floor = (64*MIB, 32*MIB) if effective == 'boot' else (5120*MIB, 2048*MIB)
+    attention_floor = min(attention_floor, total // 10)
+    urgent_floor = min(urgent_floor, total // 20)
+    return {**result, 'capacity_status': 'known', 'total_bytes': total,
+            'used_percent': round(percent, 2), 'free_bytes': free,
+            'attention_free_bytes': attention_floor, 'urgent_free_bytes': urgent_floor,
+            'byte_attention': percent >= 80 or free < attention_floor,
+            'byte_urgent': percent >= 90 or free < urgent_floor}
+
+
 def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
               max_entries: int = 200000, max_seconds: float = 30,
               state_home: Path | None = None, file_threshold: int = 100000,
-              select=None, include=None) -> dict:
+              select=None, include=None, disk_role: str = 'auto') -> dict:
+    if disk_role not in ('auto', 'general', 'boot'):
+        raise SafetyError('disk role must be auto, general or boot')
     limits = {**DEFAULTS, **(thresholds or {})}
     if set(limits) != set(DEFAULTS) or any(not isinstance(v, int) or v <= 0 for v in limits.values()):
         raise SafetyError("Thresholds must be positive bytes for known categories")
@@ -179,13 +222,11 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
         device = root.stat().st_dev
         if device not in seen_devices:
             seen_devices.add(device)
-            usage = shutil.disk_usage(root)
-            percent = 100 * usage.used / usage.total if usage.total else 0
+            capacity = byte_pressure(root, disk_role)
             inodes = inode_usage(root)
-            disks.append({"root": str(root), "used_percent": round(percent, 2), "free_bytes": usage.free,
-                          **inodes,
-                          "attention": percent >= 80 or usage.free < 5120*MIB or inodes["inode_attention"] is True,
-                          "urgent": percent >= 90 or usage.free < 2048*MIB or inodes["inode_urgent"] is True})
+            disks.append({"root": str(root), **capacity, **inodes,
+                          "attention": True if inodes["inode_attention"] is True else capacity['byte_attention'],
+                          "urgent": True if inodes["inode_urgent"] is True else capacity['byte_urgent']})
     return {"roots": [str(p) for p in actual], "items": sorted(records.values(), key=lambda r: -r["bytes"]),
             "disks": disks,
             "entries": entries, "complete": not gaps, "gaps": gaps,

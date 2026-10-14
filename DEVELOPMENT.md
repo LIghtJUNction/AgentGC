@@ -12,6 +12,17 @@ Control clients use its existing-database read-only mode, with no schema writes,
 migration, directory creation or writer-lock wait. Database opening counts toward
 client wait deadlines; missing/version-zero initialization remains pending.
 `native.py` implements Linux inotify with the system C library.
+Path-local permission/disappearance/link registration failures expose partial
+coverage instead of discarding healthy watches. Scope walks report inaccessible
+paths separately so previously registered descendant watches can be retained;
+links and vanished paths do not retain old registrations. Retained registrations
+and private control watches still count against the global budget. IN_IGNORED
+removes stale registrations and requests reconciliation. Partial coverage retries
+on reconciliation even without dirty directory events, remains a durable gap,
+and finalizes failed if still present. Global resource failures retain fallback
+behavior. Incomplete startup baselines still refuse child start/readiness.
+`tests/test_partial_native.py` exercises Linux inotify with injected local errors,
+healthy events, retry, retained budget, link replacement and final status.
 `tracker.py` records observations and runs the child command.
 `watch_control.py` provides task-scoped readiness, compact health queries and
 cooperative stop requests. Atomic readiness publication uses a non-overwriting
@@ -53,6 +64,17 @@ capacity is unsupported; failures/invalid counters are unknown and all unknown
 numeric/boolean fields stay null. These are additive `disks` fields, forwarded by
 sync and rendered without row truncation. They do not change rules, file labels,
 cleanup authorization, or complete directory measurement/growth baselines.
+
+Byte headroom uses capacity-scaled floors: general min(5 GiB, 10%) /
+min(2 GiB, 5%); boot min(64 MiB, 10%) / min(32 MiB, 5%), plus exact 80%/90%
+usage thresholds. Auto role selection requires a conventional mounted boot path
+on the selected device; explicit disk-role overrides are per invocation, not
+persistent rule changes. Byte sample failure/invalid counters remain unknown,
+without invalidating directory measurement baselines. Report policy source,
+capacity and effective floors in JSON/Markdown; inode pressure remains independent.
+`tests/test_partition_policy.py` uses mocked counters and mount metadata, checking
+small EFI examples, large-volume headroom, exact thresholds, unknown samples,
+device boundaries and direct/project-rule CLI paths. No real partitions are changed.
 
 `rules.py` loads bounded, non-linked TOML `.agcc` files, validates the closed
 schema, merges builtin policy, and matches anchored relative paths.
