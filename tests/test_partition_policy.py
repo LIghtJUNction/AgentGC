@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -48,6 +49,7 @@ class PartitionPolicyTests(unittest.TestCase):
         self.assertFalse(self.sample(1000000, 899999, 100001, 'boot')['byte_urgent'])
         self.assertTrue(self.sample(1000000, 900000, 100000, 'boot')['byte_urgent'])
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX conventional boot mount paths')
     def test_conventional_mount_detection_does_not_guess_from_folder_name(self):
         fake_root = Path('/boot/efi/output')
         with patch.object(Path, 'stat', return_value=SimpleNamespace(st_dev=7)), \

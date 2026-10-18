@@ -121,7 +121,8 @@ class QueryScopeTests(unittest.TestCase):
     def test_missing_relative_and_expanded_roots_are_index_only(self):
         root = self.project / 'removed'
         self.record(root / 'result', present=0)
-        with patch('os.getcwd', return_value=str(self.project)):
+        self.project.mkdir()
+        with contextlib.chdir(self.project):
             relative = self.store.list_files(roots=['./removed/../removed'], include_missing=True)
         self.assertEqual(self.paths(relative), {str(root / 'result')})
         with patch.dict(os.environ, {'HOME': str(self.project), 'USERPROFILE': str(self.project)}):

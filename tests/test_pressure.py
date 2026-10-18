@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,7 +18,7 @@ class PressureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
+        self.base = Path(self.tmp.name).resolve()
         self.root = self.base / "project"
         self.root.mkdir()
         self.store = Store(self.base / "state")
@@ -103,6 +104,58 @@ class PressureTests(unittest.TestCase):
         self.assertEqual(result["gaps"][0]["reason"], "PermissionError")
         self.assertFalse(result["complete"])
 
+    def test_windows_directory_device_refresh_retains_real_mount_boundaries(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        import stat
+        self.blob('target/out')
+        target = self.root / 'target'
+        original_scandir = os.scandir
+        original_lstat = Path.lstat
+        entry = SimpleNamespace(name='target', path=str(target),
+                                stat=lambda **kw: SimpleNamespace(st_mode=stat.S_IFDIR, st_dev=0))
+        stream = MagicMock()
+        stream.__enter__.side_effect = lambda: iter([entry])
+
+        def scandir(path):
+            return stream if Path(path) == self.root else original_scandir(path)
+
+        with patch('agentgc.pressure.sys.platform', 'win32'), \
+                patch('agentgc.pressure.os.scandir', side_effect=scandir):
+            result = inventory([self.root], {'build': MIB})
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['items'][0]['bytes'], 2 * MIB)
+
+        def mounted(path):
+            info = original_lstat(path)
+            if path == target:
+                return SimpleNamespace(st_mode=info.st_mode, st_dev=self.root.stat().st_dev + 1)
+            return info
+
+        with patch('agentgc.pressure.sys.platform', 'win32'), \
+                patch('agentgc.pressure.os.scandir', side_effect=scandir), \
+                patch.object(Path, 'lstat', mounted):
+            result = inventory([self.root])
+        self.assertFalse(result['complete'])
+        self.assertIn('mount boundary', result['gaps'][0]['reason'])
+        self.assertEqual(result['items'], [])
+
+    def test_windows_reparse_directory_is_skipped_before_traversal(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        import stat
+        entry = SimpleNamespace(name='target', path=str(self.root / 'target'),
+                                stat=lambda **kw: SimpleNamespace(st_mode=stat.S_IFDIR, st_dev=0,
+                                                                  st_file_attributes=0x400))
+        stream = MagicMock()
+        stream.__enter__.return_value = [entry]
+        with patch('agentgc.pressure.sys.platform', 'win32'), \
+                patch('agentgc.pressure.os.scandir', return_value=stream) as scan:
+            result = inventory([self.root])
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['items'], [])
+        scan.assert_called_once_with(self.root)
+
     def test_pacman_mounted_cache_is_a_known_category(self):
         from agentgc.pressure import PATH_CATEGORIES
         self.assertEqual(PATH_CATEGORIES[Path("/var/cache/pacman/pkg")], "cache")
@@ -154,7 +207,7 @@ class PressureTests(unittest.TestCase):
 
     def test_skill_explicitly_triggers_completion_and_system_marking(self):
         from importlib.resources import files
-        skill = files("agentgc").joinpath("skills/agentgc/SKILL.md").read_text()
+        skill = files("agentgc").joinpath("skills/agentgc/SKILL.md").read_text(encoding='utf-8')
         description = skill.split("description: ", 1)[1].split("\n", 1)[0]
         for phrase in ("task completion", "system-wide marking", "target", "node_modules",
                        "thresholds never authorize deletion", "read-only explanations"):

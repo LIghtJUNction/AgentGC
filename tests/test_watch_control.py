@@ -140,7 +140,7 @@ class ControlledWatchTests(unittest.TestCase):
 
     def test_bundled_skill_requires_proactive_tracking_and_safe_cleanup(self):
         from importlib.resources import files
-        skill = files("agentgc").joinpath("skills/agentgc/SKILL.md").read_text()
+        skill = files("agentgc").joinpath("skills/agentgc/SKILL.md").read_text(encoding='utf-8')
         for phrase in ("before editing code or documents", "watch-stop", "ready.json",
                        "Do not quarantine automatically", "not cleanup", "Read-only questions"):
             self.assertIn(phrase, skill)

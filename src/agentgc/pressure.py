@@ -6,9 +6,10 @@ import os
 import shutil
 from pathlib import Path
 import stat
+import sys
 import time
 
-from .paths import SafetyError, absolute, no_links
+from .paths import SafetyError, absolute, is_link, no_links
 
 MIB = 1024 * 1024
 DEFAULTS = {"dependencies": 1024*MIB, "build": 512*MIB, "cache": 1024*MIB,
@@ -214,9 +215,15 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
                         continue
                     try:
                         info = entry.stat(follow_symlinks=False)
-                        if stat.S_ISLNK(info.st_mode):
+                        if is_link(info):
                             continue
                         if stat.S_ISDIR(info.st_mode):
+                            # Windows DirEntry.stat() leaves st_dev at zero.
+                            # Refresh without following links before comparing devices.
+                            if sys.platform == 'win32' and info.st_dev == 0:
+                                info = p.lstat()
+                                if is_link(info):
+                                    continue
                             if info.st_dev != device:
                                 gap(p, "mount boundary skipped; select this root explicitly")
                                 continue

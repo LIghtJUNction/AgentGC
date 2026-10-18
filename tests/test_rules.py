@@ -35,7 +35,7 @@ class RulesTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)/'project'
+        self.root = Path(self.tmp.name).resolve()/'project'
         self.root.mkdir()
         self.store = Store(Path(self.tmp.name)/'state')
         self.addCleanup(self.store.close)

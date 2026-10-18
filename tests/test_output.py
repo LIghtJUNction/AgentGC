@@ -200,7 +200,7 @@ class OutputTests(unittest.TestCase):
 
     def test_bundled_skill_prefers_markdown_except_programmatic_queries(self):
         from importlib.resources import files
-        skill=files('agentgc').joinpath('skills/agentgc/SKILL.md').read_text()
+        skill=files('agentgc').joinpath('skills/agentgc/SKILL.md').read_text(encoding='utf-8')
         query=skill.split('## Query',1)[1].split('## Finish',1)[0]
         self.assertIn('Prefer default compact Markdown',query)
         self.assertIn('programmatic parsing',query)

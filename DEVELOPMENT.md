@@ -110,6 +110,12 @@ filesystem capacity, used/total and df-style used/(used+available). Physical
 allocation, shared extents, compression and Btrfs multi-device layout are not
 measured. Original thresholds remain unchanged. `tests/test_measurement_basis.py`
 uses mocked counters and isolated hardlinks to verify the distinction.
+Windows directory entries omit device IDs, so refresh zero-device directory
+metadata with lstat before enforcing mount boundaries. Skip all reparse points
+before traversal. The pressure regressions simulate missing device IDs, real
+cross-device directories and reparse entries without relaxing these protections.
+Test fixtures canonicalize platform temporary-directory aliases before direct
+SQL comparisons, and bundled UTF-8 skill checks specify their encoding.
 Optional SQLite `directory_reviews` records are
 historical attention notes, separate from file labels and cleanup authorization.
 Thresholds never create disposable reviews. Incomplete byte counts are lower

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -73,7 +74,8 @@ class UsabilityTests(unittest.TestCase):
         self.assertEqual(category, 'tracking-failure')  # failed spawn is not a transient file
 
     def test_manifest_and_stdin_null_paths(self):
-        a, b = self.file('space name'), self.file('new\nline')
+        a = self.file('space name')
+        b = self.file('other name' if os.name == 'nt' else 'new\nline')
         manifest = self.base / 'files.txt'
         manifest.write_text(str(a) + '\n' + str(a) + '\n', encoding='utf-8')
         code, result = self.cli('mark', 'keep', '--files-from', manifest)
