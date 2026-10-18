@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Install verification build tools
+        run: python -m pip install "setuptools>=68" wheel
       - name: Install package
         run: python -m pip install --no-deps .
       - name: Run tests

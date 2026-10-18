@@ -187,8 +187,10 @@ pipes that descendants may keep open. It does not terminate descendants or close
 AgentGC session records; failures to reap remain visible.
 
 The archive regression requires the existing setuptools build dependency and
-explicitly skips if unavailable. It builds a wheel and sdist without downloads,
-using synthetic cache/quarantine/state files and a stale manifest in a temporary
+explicitly skips if unavailable. CI installs setuptools and wheel in the test
+interpreter before package installation, so archive checks run on every matrix
+entry. The test builds a wheel and sdist without downloads, using synthetic
+cache/quarantine/state files and a stale manifest in a temporary
 source tree. It also reconstructs the owned sdist using validated regular-file
 paths (never archive link extraction) and builds a second wheel offline. The
 rebuilt wheel must have the same members and bundled skill as the direct build;
