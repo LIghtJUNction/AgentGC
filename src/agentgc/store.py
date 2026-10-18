@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS sessions (
  started REAL NOT NULL, ended REAL, heartbeat REAL NOT NULL,
  pid INTEGER, exit_code INTEGER, gaps INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS session_results (
+ session_id TEXT PRIMARY KEY,
+ command_status TEXT NOT NULL, command_exit_code INTEGER,
+ tracking_status TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS files (
  id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, root TEXT NOT NULL,
  size INTEGER NOT NULL, signature TEXT NOT NULL,
@@ -54,6 +59,23 @@ CREATE TABLE IF NOT EXISTS quarantine (
 
 class StoreNotReady(SafetyError):
     """An existing database has not completed its first initialization."""
+
+
+def _query_roots(roots: list[str | Path] | None) -> tuple[Path, ...]:
+    """Normalize index filters lexically, without touching historical paths."""
+    normalized = {Path(os.path.abspath(os.path.expanduser(root))) for root in roots or []}
+    selected: list[Path] = []
+    for root in sorted(normalized, key=lambda path: (len(path.parts), str(path))):
+        if not any(root.is_relative_to(parent) for parent in selected):
+            selected.append(root)
+    return tuple(selected)
+
+
+def _page(limit: int, offset: int) -> None:
+    if not 1 <= limit <= 10000:
+        raise SafetyError("limit must be between 1 and 10000")
+    if not 0 <= offset <= 2**63 - 1:
+        raise SafetyError("offset must be between 0 and 9223372036854775807")
 
 
 class Store:
@@ -154,12 +176,48 @@ class Store:
             "VALUES(?,?,?,?,?,'running',?,?,?)",
             (sid, agent, json.dumps([str(r) for r in roots]), command, backend, now, now, os.getpid()),
         )
+        self.db.execute(
+            "INSERT INTO session_results(session_id,command_status,tracking_status) VALUES(?,?,'running')",
+            (sid, "not-started" if command else "not-applicable"),
+        )
         return sid
+
+    def command_started(self, sid: str) -> None:
+        self.db.execute(
+            "UPDATE session_results SET command_status='running',command_exit_code=NULL WHERE session_id=?",
+            (sid,),
+        )
+
+    def command_finished(self, sid: str, code: int) -> None:
+        # This is the child's actual returncode, including a negative POSIX
+        # signal value. Wrapper/tracking errors never substitute their code.
+        self.db.execute(
+            "UPDATE session_results SET command_status=?,command_exit_code=? WHERE session_id=?",
+            ("succeeded" if code == 0 else "failed", code, sid),
+        )
+
+    def tracking_finished(self, sid: str, status: str) -> None:
+        if status not in ("complete", "partial", "failed", "interrupted", "unknown"):
+            raise SafetyError("Invalid tracking result")
+        self.db.execute("UPDATE session_results SET tracking_status=? WHERE session_id=?", (status, sid))
 
     def end_session(self, sid: str, code: int, status: str = "finished") -> None:
         self.db.execute(
             "UPDATE sessions SET status=?, ended=?, heartbeat=?, exit_code=? WHERE id=?",
             (status, time.time(), time.time(), code, sid),
+        )
+        # Generic callers can end scans or manually close a confirmed stopped
+        # session. They cannot establish a child's result from this legacy
+        # wrapper exit_code. Explicit tracker results take precedence.
+        self.db.execute(
+            "UPDATE session_results SET tracking_status=CASE "
+            "WHEN ?='interrupted' THEN 'interrupted' "
+            "WHEN ?='finished' THEN CASE WHEN "
+            "(SELECT gaps FROM sessions WHERE id=?)>0 OR EXISTS "
+            "(SELECT 1 FROM events WHERE session_id=? AND kind LIKE '%-unresolved') "
+            "THEN 'partial' ELSE 'complete' END ELSE 'unknown' END "
+            "WHERE session_id=? AND tracking_status='running'",
+            (status, status, sid, sid, sid),
         )
 
     def active_for(self, path: Path) -> list[str]:
@@ -167,12 +225,45 @@ class Store:
         return [row["id"] for row in self.db.execute("SELECT id,roots FROM sessions WHERE status='running'")
                 if any(path.is_relative_to(Path(root)) for root in json.loads(row["roots"]))]
 
+    def _path_filter(self, column: str, roots: tuple[Path, ...]) -> tuple[str, list[str]]:
+        if os.name == "nt":
+            # Native Path comparisons preserve Windows case-insensitive semantics.
+            self.db.create_function(
+                "agentgc_query_path", 1,
+                lambda value: int(bool(value) and any(Path(value).is_relative_to(root) for root in roots)),
+                deterministic=True,
+            )
+            return f"agentgc_query_path({column})=1", []
+        terms, values = [], []
+        for root in roots:
+            prefix = str(root).rstrip(os.sep) + os.sep
+            upper = prefix[:-1] + chr(ord(os.sep) + 1)
+            # Path columns already use BINARY collation. Redundant explicit
+            # collations here prevent SQLite from combining the path indexes.
+            terms.append(f"({column}=? OR ({column}>=? AND {column}<?))")
+            values.extend((str(root), prefix, upper))
+        return "(" + " OR ".join(terms) + ")", values
+
+    def _session_filter(self, roots: tuple[Path, ...]) -> str:
+        def overlap(value: str) -> int:
+            stored = json.loads(value)
+            if not isinstance(stored, list) or any(not isinstance(root, str) for root in stored):
+                raise ValueError("Invalid session roots")
+            return int(any(Path(root).is_relative_to(selected) or selected.is_relative_to(Path(root))
+                           for root in stored for selected in roots))
+
+        # JSON1 is optional in SQLite builds; connection-local functions need no
+        # schema changes or unbounded lists of matching session IDs.
+        self.db.create_function("agentgc_query_overlap", 1, overlap, deterministic=True)
+        return "agentgc_query_overlap(s.roots)=1"
+
     def list_files(self, query: str = "", sort: str = "time", label: str | None = None,
                    include_missing: bool = False, limit: int = 100, offset: int = 0,
-                   session: str | None = None) -> list[dict]:
+                   session: str | None = None, roots: list[str | Path] | None = None) -> list[dict]:
         orders = {"time": "f.changed", "size": "f.size", "activity": "f.activity"}
-        if sort not in orders or not 1 <= limit <= 10000 or offset < 0:
-            raise SafetyError("Invalid sort, limit (1..10000), or offset")
+        if sort not in orders:
+            raise SafetyError("Invalid sort")
+        _page(limit, offset)
         text = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         terms = ["(f.path LIKE ? ESCAPE '\\' OR f.note LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\')"]
         args: list = [f"%{text}%"] * 3
@@ -184,9 +275,56 @@ class Store:
         if session:
             terms.append("EXISTS (SELECT 1 FROM events e WHERE e.file_id=f.id AND e.session_id=?)")
             args.append(session)
+        selected = _query_roots(roots)
+        if selected:
+            clause, values = self._path_filter("f.path", selected)
+            terms.append(clause)
+            args.extend(values)
         sql = ("SELECT f.*,s.agent FROM files f LEFT JOIN sessions s ON s.id=f.session_id WHERE "
                + " AND ".join(terms) + f" ORDER BY {orders[sort]} DESC,f.path LIMIT ? OFFSET ?")
         return [dict(r) for r in self.db.execute(sql, (*args, limit, offset))]
+
+    def history(self, path: str | Path | None = None, session: str | None = None,
+                limit: int = 100, offset: int = 0,
+                roots: list[str | Path] | None = None) -> list[dict]:
+        _page(limit, offset)
+        terms, values = [], []
+        if path:
+            terms.append("e.path=?")
+            values.append(str(absolute(path)))
+        if session:
+            terms.append("e.session_id=?")
+            values.append(session)
+        selected = _query_roots(roots)
+        if selected:
+            clause, parameters = self._path_filter("e.path", selected)
+            overlapping = self._session_filter(selected)
+            terms.append(f"({clause} OR (e.path='' AND e.kind='gap' AND EXISTS "
+                         f"(SELECT 1 FROM sessions s WHERE s.id=e.session_id AND {overlapping})))")
+            values.extend(parameters)
+        where = " WHERE " + " AND ".join(terms) if terms else ""
+        return [dict(row) for row in self.db.execute(
+            "SELECT e.* FROM events e" + where + " ORDER BY e.id DESC LIMIT ? OFFSET ?",
+            (*values, limit, offset),
+        )]
+
+    def list_sessions(self, roots: list[str | Path] | None = None, status: str | None = None,
+                      limit: int = 100, offset: int = 0) -> list[dict]:
+        _page(limit, offset)
+        terms, values = [], []
+        if status is not None:
+            if status not in ("running", "finished", "failed", "interrupted", "closed-by-user"):
+                raise SafetyError("Invalid session status")
+            terms.append("s.status=?")
+            values.append(status)
+        selected = _query_roots(roots)
+        if selected:
+            terms.append(self._session_filter(selected))
+        where = " WHERE " + " AND ".join(terms) if terms else ""
+        return [dict(row) for row in self.db.execute(
+            "SELECT s.* FROM sessions s" + where + " ORDER BY s.started DESC,s.id LIMIT ? OFFSET ?",
+            (*values, limit, offset),
+        )]
 
     def stats(self) -> dict:
         row = self.db.execute(

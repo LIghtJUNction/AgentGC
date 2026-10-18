@@ -96,12 +96,34 @@ def readiness(store: Store, name: str) -> tuple[dict, sqlite3.Row]:
     return record, row
 
 
+def starting_status(home: Path, name: str, note: str | None = None) -> dict:
+    """Keep unavailable startup evidence typed, rather than assuming zero gaps."""
+    return {"schema_version": 1, "control": name, "home": str(home), "session": None,
+            "state": "starting", "ready": False, "status": None, "session_status": None,
+            "pid": None, "backend": None, "roots": [], "excludes": None,
+            "coverage_known": False, "expires_at": None, "heartbeat_age_seconds": None,
+            "exit_code": None, "command_status": "not-applicable", "command_exit_code": None,
+            "tracking_status": "unknown", "gaps": None, "gap_count": None,
+            "unresolved_event_count": None,
+            "count_scope": {"gap_count": "session-cumulative", "unresolved_event_count": "retained-events"},
+            "note": note or "No successful baseline published; do not start writes."}
+
+
 def watch_status(store: Store, name: str) -> dict:
+    # Readiness identity, legacy status and independent outcomes must describe
+    # the same database snapshot while a watcher finalizes concurrently.
+    store.db.execute("SAVEPOINT watch_status_snapshot")
+    try:
+        return _watch_status(store, name)
+    finally:
+        store.db.execute("RELEASE watch_status_snapshot")
+
+
+def _watch_status(store: Store, name: str) -> dict:
     try:
         record, row = readiness(store, name)
     except FileNotFoundError:
-        return {"control": name, "home": str(store.home), "state": "starting", "ready": False,
-                "note": "No successful baseline published; do not start writes."}
+        return starting_status(store.home, name)
     now = time.time()
     age = now - row["heartbeat"]
     state = row["status"]
@@ -115,7 +137,11 @@ def watch_status(store: Store, name: str) -> dict:
             pass
         else:
             state = "stopping"
-    return {"control": name, "home": str(store.home), "session": record["session"],
+    # Read-only status clients work with legacy stores too; the shared outcome
+    # reader retains unknown command results instead of inferring from exit_code.
+    from .session_state import session_result
+    return {**session_result(store, record["session"]),
+            "control": name, "home": str(store.home), "session": record["session"], "pid": record["pid"],
             "state": state, "ready": state == "ready", "status": row["status"],
             "backend": row["backend"], "heartbeat_age_seconds": round(age, 2),
             "roots": json.loads(row["roots"]), "excludes": record.get("excludes"),
@@ -157,8 +183,7 @@ def control_command(home: Path, name: str, *, stop: bool = False, seconds: float
         except (FileNotFoundError, StoreNotReady):
             if stop:
                 raise SafetyError("No successful watcher baseline for this control name")
-            result = {"control": name, "home": str(home), "state": "starting", "ready": False,
-                      "note": "No initialized state or successful baseline; do not start writes."}
+            result = starting_status(home, name, "No initialized state or successful baseline; do not start writes.")
             remaining = deadline - time.monotonic()
             if seconds is None:
                 return result, 1
@@ -169,9 +194,18 @@ def control_command(home: Path, name: str, *, stop: bool = False, seconds: float
             continue
         try:
             if stop:
-                result = request_stop(store, name)
                 if seconds is None:
-                    return result, 0
+                    # A request-only client still returns the same typed
+                    # coverage and quality fields as a waiting client. Keep
+                    # the request identity and subsequent status coherent if
+                    # the watcher finalizes as soon as it sees the stop file.
+                    store.db.execute("SAVEPOINT watch_stop_snapshot")
+                    try:
+                        result = request_stop(store, name)
+                        return {**watch_status(store, name), **result}, 0
+                    finally:
+                        store.db.execute("RELEASE watch_stop_snapshot")
+                result = request_stop(store, name)
             if seconds is not None:
                 status = wait_status(store, name, "finished" if stop else "ready",
                                      max(0, deadline - time.monotonic()))

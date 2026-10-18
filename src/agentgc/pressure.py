@@ -30,6 +30,44 @@ SKIP = {".git"}
 SYSTEM_SKIP = {Path("/proc"), Path("/sys"), Path("/dev"), Path("/run")}
 
 
+def logical_measurement_basis() -> dict:
+    """Describe observed file sizes without implying unique physical storage."""
+    return {"kind": "logical-file-size", "source": "os.stat_result.st_size",
+            "scope": "observed regular files", "physical_allocation": "not-measured",
+            "shared_extents": "not-measured", "hard_links": "may-repeat",
+            "nested_candidates": "overlap", "snapshot": "non-atomic",
+            "incomplete_totals": "observed-lower-bound"}
+
+
+def disk_measurement_basis() -> dict:
+    """State the platform counter source; no filesystem-native allocation query."""
+    if os.name == "posix":
+        backend = "os.statvfs"
+        total_basis = "f_blocks * f_frsize"
+        used_basis = "(f_blocks - f_bfree) * f_frsize"
+        free_basis = "f_bavail * f_frsize; space available to the current user"
+    elif os.name == "nt":
+        backend = "nt._getdiskusage (Windows API)"
+        total_basis = "total bytes reported by the Windows API through shutil.disk_usage"
+        used_basis = "total_bytes - free_bytes"
+        free_basis = "free bytes reported by the Windows API through shutil.disk_usage"
+    else:
+        backend = "platform-dependent"
+        total_basis = "total bytes reported by shutil.disk_usage"
+        used_basis = "used bytes reported by shutil.disk_usage"
+        free_basis = "free bytes reported by shutil.disk_usage"
+    return {"kind": "filesystem-capacity", "source": "shutil.disk_usage",
+            "backend": backend, "total_bytes_basis": total_basis,
+            "used_bytes_basis": used_basis, "free_bytes_basis": free_basis,
+            "used_percent_formula": "100 * used_bytes / total_bytes",
+            "df_style_used_percent_formula": "100 * used_bytes / (used_bytes + free_bytes)",
+            "physical_allocation": "not-measured", "shared_extents": "not-measured",
+            "filesystem_type": "unknown",
+            "caveat": "Reserved space can change percentage denominators. Filesystem-native "
+                      "allocation, compression, shared extents and multi-device accounting "
+                      "are not measured; this is not a measurement of reclaimable space."}
+
+
 def inode_usage(root: Path) -> dict:
     """Sample usable inode capacity once; unknown is not zero or safe."""
     result = {"inode_status": "unknown", "total_inodes": None, "free_inodes": None,
@@ -75,7 +113,8 @@ def byte_pressure(root: Path, role: str = 'auto') -> dict:
             source = 'default-mount-detection-unavailable'
     result = {'disk_role': effective, 'disk_role_source': source,
               'capacity_status': 'unknown', 'capacity_reason': None,
-              'total_bytes': None, 'used_percent': None, 'free_bytes': None,
+              'total_bytes': None, 'used_bytes': None, 'used_percent': None, 'free_bytes': None,
+              'df_style_used_percent': None, 'measurement_basis': disk_measurement_basis(),
               'attention_free_bytes': None, 'urgent_free_bytes': None,
               'byte_attention': None, 'byte_urgent': None}
     try:
@@ -87,11 +126,14 @@ def byte_pressure(root: Path, role: str = 'auto') -> dict:
     except (OSError, NotImplementedError) as exc:
         return {**result, 'capacity_reason': 'byte metadata unavailable: ' + type(exc).__name__}
     percent = 100 * used / total
+    available_total = used + free
+    df_style_percent = 100 * used / available_total if available_total else None
     attention_floor, urgent_floor = (64*MIB, 32*MIB) if effective == 'boot' else (5120*MIB, 2048*MIB)
     attention_floor = min(attention_floor, total // 10)
     urgent_floor = min(urgent_floor, total // 20)
     return {**result, 'capacity_status': 'known', 'total_bytes': total,
-            'used_percent': round(percent, 2), 'free_bytes': free,
+            'used_bytes': used, 'used_percent': round(percent, 2), 'free_bytes': free,
+            'df_style_used_percent': round(df_style_percent, 2) if df_style_percent is not None else None,
             'attention_free_bytes': attention_floor, 'urgent_free_bytes': urgent_floor,
             'byte_attention': percent >= 80 or free < attention_floor,
             'byte_urgent': percent >= 90 or free < urgent_floor}
@@ -143,7 +185,8 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
         records[key] = {"path": key, "category": category, "bytes": 0, "files": 0,
                         "threshold_bytes": limits[category], "file_threshold": file_threshold,
                         "parent_candidate": parent,
-                        "label": "review", "source": "directory-snapshot"}
+                        "label": "review", "source": "directory-snapshot",
+                        "measurement_basis": logical_measurement_basis()}
         return key
 
     def walk(path, device, ancestors):
@@ -232,6 +275,7 @@ def inventory(roots: list[Path], thresholds: dict[str, int] | None = None,
             "entries": entries, "complete": not gaps, "gaps": gaps,
             "gap_count": gap_count, "gaps_truncated": gap_count > len(gaps),
             "thresholds": limits, "measurement": "logical bytes; nested candidates overlap; hard links may repeat",
+            "measurement_basis": logical_measurement_basis(),
             "mode": "preview"}
 
 

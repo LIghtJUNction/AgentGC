@@ -30,13 +30,27 @@ agcc --version
 
 Cloning a private repository requires your own GitHub access. Alternatively, run `python -m pip install .` in an existing Python virtual environment.
 
+## Everyday commands
+
+From the project directory:
+
+```sh
+agcc run --agent assistant --root . -- your-agent-command
+agcc list --root . --sort size --limit 20
+agcc history --root . --limit 20
+agcc sessions --root . --status running
+agcc mark result.json keep --note "Final deliverable"
+```
+
+Query `--root .` selects this project; omitting it still queries the shared index across projects. `agcc --help` and `agcc COMMAND --help` include copyable examples. Agents editing files directly should use the background watcher workflow below.
+
 ## A complete example
 
 Run this in a test directory:
 
 ```sh
 agcc run --agent demo --root . -- python -c "from pathlib import Path; Path('scratch.txt').write_text('demo')"
-agcc --json list --sort size
+agcc --json list --root . --sort size
 agcc history scratch.txt
 agcc mark scratch.txt disposable --note "Demo complete; no remaining use or references"
 agcc gc scratch.txt
@@ -54,19 +68,44 @@ agcc run --agent assistant --root . -- your-agent-command
 agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-command
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
+agcc --json watch-start --root . --agent assistant --wait-ready 30
 agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
 agcc watch-status task-UNIQUE_ID --wait-ready 30
 agcc watch-stop task-UNIQUE_ID --wait 30
 agcc scan --root .
 ```
 
-Start `watch --control` once through the execution tool's background mechanism, then keep working on the engineering task while it tracks edits, builds and tests. Do not restart it for each operation. Reuse only confirmed live tracking with the same state home, correct roots and compatible exclusions; never stop another task's watcher. New controls require unique names of 1–64 ASCII letters, digits, underscores or hyphens.
+`watch-start` launches a background watcher and waits for verified baseline/readiness in one call. It returns control/session IDs, roots, exclusions, quality and a private log path. Controls are generated automatically or supplied with `--control`; names cannot be reused. Startup failure/timeout reaps only the direct child started by that call, with explicit reporting if cleanup fails. The default duration is 3600 seconds. `watch-stop CONTROL` waits up to 30 seconds for the final scan by default; `--no-wait` requests stop only.
+
+The original `watch --control` remains available for execution tools managing their own background jobs. Reuse only confirmed live tracking with the same state home, correct roots and compatible exclusions; never stop another task's watcher. Controls require unique names of 1–64 ASCII letters, digits, underscores or hyphens.
 
 After a successful baseline, the complete readiness record is published atomically to `<state-home>/watches/<control>/ready.json`, including session, PID, roots, exclusions and expected expiry. Find the state directory with `agcc --json doctor`. `watch-status CONTROL --wait-ready 30` waits locally in one CLI call and emits one result, rather than requiring repeated agent calls or full session dumps. Failure or timeout returns nonzero. Before writing, also check `roots`, `excludes`, `coverage_known` and `gaps`. Legacy records lack exclusion evidence. Recent heartbeat evidence alone does not prove writer identity or complete coverage. Control commands read existing state through a non-writing connection, without schema initialization/migration or contention for the baseline's write lock. Store opening counts toward the wait budget; missing or initializing state remains `starting`, without creating directories.
 
-`watch-stop` only requests a cooperative stop, without signaling a PID or directly closing a session. `--wait 30` waits for final reconciliation, emits one result, and returns zero only for normal completion. Both wait options accept up to 300 seconds and use bounded local backoff queries. Controlled watchers default to a finite 3600-second duration; choose a sufficient explicit duration for longer tasks. They are not permanent daemons. Report readiness timeouts, early exits and gaps. Watcher completion does not prove application writers stopped or authorize cleanup.
+`watch-stop` requests cooperative finalization without signaling a recorded PID or closing the session directly. It waits 30 seconds by default; use `--wait` to change that or `--no-wait` to request only. Readiness and stop waits are capped at 300 seconds with bounded local backoff and one result. Stop waits require `complete` tracking by default; `--no-strict-tracking` also accepts ended `partial` tracking, never failed baselines, interruptions or unknown results. Watcher completion does not prove application writers stopped or authorize cleanup.
 
-`run` preserves the child's input, output, and exit code without adding a shell. If a command needs shell operators, invoke a shell explicitly. Session information goes to stderr, not the child's stdout. The wrapper passes `AGENTGC_SESSION` and `AGENTGC_HOME` to the child.
+`run` preserves the child's input, output, and exit code by default without adding a shell. If a command needs shell operators, invoke a shell explicitly. Session information goes to stderr, not the child's stdout. The wrapper passes `AGENTGC_SESSION` and `AGENTGC_HOME` to the child.
+
+### Command outcomes and tracking quality
+
+Command and tracking outcomes are independent. A successful test with missing short-lived metadata can report:
+
+```text
+command: succeeded; command_exit_code=0
+tracking: partial; gap_count=4; unresolved_event_count=12
+```
+
+`run --strict-tracking` returns nonzero for incomplete tracking without changing the true `command_exit_code`. `watch` and stop waits are strict by default; `--no-strict-tracking` accepts normally ended partial tracking. `complete` means normal finalization with no recorded gaps/unresolved events, not proof of every intermediate event. Unstarted command exits are null. Legacy sessions without separate outcomes remain unknown; a legacy `session_status=failed` does not mean tests failed.
+
+```sh
+agcc --json session SESSION_ID
+agcc --json sessions --root . --limit 20
+agcc diagnostics --session SESSION_ID
+agcc --details diagnostics --session SESSION_ID
+```
+
+Summary JSON uses `schema_version=1` and consistent `command_exit_code`, `command_status`, `tracking_status`, `gap_count`, `unresolved_event_count` and array `roots`. Gap counts are session-cumulative; unresolved counts cover retained events, as stated in `count_scope`. Unknown numeric values are null. Separate persisted results preserve existing lifecycle fields; final quality and lifecycle publish in one transaction.
+
+Compact diagnostics distinguish expected link boundaries, unavailable metadata, coverage loss, unknown evidence and removal notices. They group actual event paths by session root and first relative parent directory; legacy free text is not parsed into guessed paths. Compound classifications and typed notices may share causes with gap records, so counts cannot be summed as distinct gaps or lost files. Immediate warnings are compact; `--details diagnostics` and history retain original evidence.
 
 Repeat `--root` to select multiple directories; nested roots are merged. The default root is the current directory. The child still runs in the directory where you started `agcc`; `--root` does not change its working directory. Use `--exclude cache` or `--exclude '*.log'` to exclude paths. Matching uses case-sensitive relative paths or path components, not `.gitignore` syntax.
 
@@ -98,7 +137,7 @@ Human actions and other processes in a shared directory may also be observed. Th
 
 ## Output format
 
-Default output is compact Markdown: a command heading, summary and bullet rows, rather than indented JSON. Sizes use readable units; routine summaries omit internal hashes/signatures and repeated measurements. Ordinary lists default to 20 returned rows with explicit omission counts. `--rows N` changes the display cap; `--details` shows all returned Markdown rows (not every raw field); neither expands query limits. `list/search/history` show the next offset; preserve your filters. Returned running sessions and uncertain/active automatic marks are prioritized. JSON is still subject to query limits, not the entire index.
+Default output is compact Markdown: a command heading, summary and bullet rows, rather than indented JSON. Sizes use readable units; routine summaries omit internal hashes/signatures and repeated measurements. Ordinary lists default to 20 returned rows with explicit omission counts. `--rows N` changes the display cap; `--details` shows all returned Markdown rows (not every raw field); neither expands query limits. `list/search/history/sessions` show the next offset; preserve your filters. Sessions preserve query order; use `--status running` to select active sessions. Uncertain/active automatic marks are prioritized. JSON is still subject to query limits, not the entire index.
 
 ```sh
 agcc list --sort size --limit 20
@@ -108,7 +147,7 @@ agcc --details sync --dry-run           # includes unchanged observations
 agcc --json list --sort size --limit 100   # machine parsing and raw returned records
 ```
 
-JSON retains raw command fields without Markdown presentation caps; do not scrape Markdown as an API. GC candidates/refusal reasons, recovery records and returned errors/gaps have no second presentation cap. Sync counts unknown across all observations, even unchanged states. Incomplete scans remain explicit. Control characters, bidi controls and HTML in paths/notes are escaped for display; JSON retains original values. `run` preserves child stdout/stderr and exit codes, with the wrapper Markdown summary on stderr. The summary reads local session status, gap counts and retained unresolved-event counts; read failures are explicitly unavailable. Zero counts do not prove complete history; successful child exit does not imply gap-free tracking. Filesystem risks, GC refusals, recovery and gap details bypass `--rows`.
+JSON has no Markdown presentation cap; do not scrape Markdown as an API. `session/sessions` use versioned summaries; sessions no longer serialize database rows directly. Use `session`, `session_status` and the independent outcome fields; roots is an array. Diagnostic JSON and history retain original evidence. GC refusals, recovery, filesystem risks and errors are not presentation-capped. Default diagnostics group classes/prefixes; `--details` expands original gaps. Display escapes control/bidi characters and HTML; JSON retains raw values. Child streams remain untouched and run defaults to the child's exit code, with strict tracking available separately. Zero counts do not prove complete history; command success is independent of tracking quality.
 
 ## Queries and labels
 
@@ -120,6 +159,11 @@ agcc --json search output
 agcc history path/to/file
 agcc history --session SESSION_ID
 agcc list --session SESSION_ID
+agcc list --root . --sort size --limit 20
+agcc search output --root .
+agcc history --root . --limit 20 --offset 20
+agcc sessions --root . --status running
+agcc sessions --root . --limit 20 --offset 20
 agcc sessions
 agcc stats
 agcc mark path/to/result keep --note "Final result needed for delivery"
@@ -129,6 +173,12 @@ agcc mark temporary --files-from paths.txt --note "Intermediate files; not clean
 find ./outputs -type f -print0 | agcc mark review --files-from - --null
 agcc diagnostics --session SESSION_ID
 ```
+
+`list/search/history/sessions` accept repeated `--root` filters as a union, applied before pagination and combined with existing label, text or session filters. File queries match indexed paths at directory boundaries: `project` does not match `project-old`, and path characters such as `%` and `_` are literal. Queries do not scan directories or require them to still exist, and do not change labels or sessions. Query roots do not resolve symlink aliases; use the path shown in the index.
+
+Session roots match by overlap, including a parent watcher covering the project. `--status` accepts `running/finished/failed/interrupted/closed-by-user`; `--limit` defaults to 100 with a maximum of 10000, and `--offset` paginates. Project history retains pathless gaps from overlapping sessions; these may also affect other roots in that session and are not precise project attribution. Use `diagnostics --session` for full session evidence. `stats` remains a global shared-index summary.
+
+An explicit `history FILE` still returns only that file's path events; use root history or session diagnostics for session-level gaps. Markdown history, observation and session times use UTC ISO 8601 timestamps to seconds, with `Z` meaning UTC; unknown or invalid times display `unknown`. JSON preserves the original numeric timestamps.
 
 `mark` accepts multiple explicit paths or a UTF-8 newline list (`--files-from -` reads stdin; `--null` uses NUL delimiters for names containing newlines). Relative paths use the current directory; no glob expansion or recursive traversal is performed. Each file commits independently; failures do not stop other files, are reported individually, and cause exit code 1. Single-path syntax and JSON file records remain compatible.
 
@@ -196,6 +246,8 @@ Separate SQLite tables retain effective-policy fingerprints and transition histo
 
 ## Directory pressure and proactive marking
 
+`measurement_basis` states what was sampled. Directory bytes sum regular-file `st_size`; filesystem counters come from `shutil.disk_usage` (POSIX: `statvfs`). Existing `used_percent` uses `used/total`; the additional `df_style_used_percent` uses `used/(used+current-user-available)`. Reserved capacity can make these differ. Thresholds retain the original formula. Btrfs physical allocation, compression, shared extents and multi-device layouts are not measured; filesystem type remains unknown and logical bytes are not reclaimable space.
+
 ```sh
 agcc --json pressure --root .
 agcc --json pressure --root . --root /path/to/cache --threshold build=1024 --apply
@@ -247,6 +299,27 @@ Before quarantine, the tool commits a `prepared` operation journal, then moves t
 
 Set the state directory with `--home` or `AGENTGC_HOME`. Defaults: Linux `$XDG_STATE_HOME/agentgc`, or `~/.local/state/agentgc` if unset; macOS `~/Library/Application Support/agentgc`; Windows `%LOCALAPPDATA%/agentgc`.
 
+Reuse a stable disk-backed state home and a ready watcher across related work.
+Do not create a database per command, retry or task phase: each new store repeats
+the selected roots' baseline. On Linux, scan/run/watch/watch-start reject state
+on tmpfs/ramfs before creating a database or starting a command. An intentional
+bounded experiment may explicitly use `--allow-memory-state`; other platforms
+do not currently detect memory-backed filesystems.
+
+Tracking defaults to 10000 file candidates per scan and a 256 MiB budget for the
+database and SQLite sidecars. Checks occur before write batches; one batch and
+final failure records may exceed the byte budget. This is not a filesystem quota.
+A limit fails visibly with a gap; failed baselines never start the child or
+publish readiness. Unvisited files are not marked missing. Existing oversized
+stores remain queryable and stoppable but cannot accept new tracking within the
+smaller budget. No automatic deletion, store rotation, migration or backup occurs.
+
+```sh
+agcc watch-start --root ./src --root ./tests --agent assistant
+# Raise budgets only for an explicit larger scope, not as an automatic retry.
+agcc run --root . --max-files 20000 --max-state-mib 512 -- your-command
+```
+
 SQLite uses WAL, write transactions, and a busy timeout. Multiple local processes may share a state directory. Keep state on a local filesystem; network shares are not recommended. On POSIX, new state directories use `0700` and databases use `0600`; on Windows, directory permissions are inherited. Storage is not encrypted.
 
 The index contains absolute paths, agent labels, and manual notes; treat it as private data. It does not save full command arguments, upload records, or connect to remote services. Do not put secrets in agent names or notes. Tracking checks file metadata only; review and quarantine validation stream file contents with a 1 MiB buffer.
@@ -273,7 +346,7 @@ agcc skill --install /path/to/your-agent/skills
 agcc skill --install ~/.agents/skills
 ```
 
-The global skill instructs agents to proactively track before local code or document edits, builds, tests, dependency installs, scripts, and artifact generation, even without a cleanup request. Read-only questions and remote-only work do not need a local watcher. Reuse known live tracking with compatible roots and exclusions. For direct file-tool edits, start one background `watch --control`, use `watch-status --wait-ready`, then keep it running across edits, builds and tests. At completion, use `watch-stop --wait` and inspect session history and outputs. A post-task snapshot is not a substitute for tracking.
+The global skill instructs agents to proactively track before local code or document edits, builds, tests, dependency installs, scripts, and artifact generation, even without a cleanup request. Read-only questions and remote-only work do not need a local watcher. Reuse known live tracking with compatible roots and exclusions. For direct file-tool edits, call watch-start once and wait for readiness, keeping it across edits, builds and tests. watch-stop CONTROL waits for the final scan by default; inspect independent command/tracking outcomes, history and outputs. The original watch --control remains available. A post-task snapshot is not a substitute for tracking.
 
 In Pi, run `/reload` after installation, or invoke `/skill:agentgc` explicitly. Skills are agent instructions, not automatic execution hooks: they cannot guarantee compliance by every client or model and do not enable persistent whole-system monitoring. Existing skills are not overwritten; preserve customizations before updating an installed copy. Repository and installed copies do not synchronize automatically. Proactive tracking does not mean automatic deletion; cleanup still requires use and reference checks, user permission, and a preview.
 

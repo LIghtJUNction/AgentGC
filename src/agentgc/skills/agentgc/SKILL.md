@@ -22,6 +22,27 @@ and compatible exclusions. `AGENTGC_SESSION` is a hint, not proof of liveness.
 Legacy controls lack exclusion evidence; verify their original configuration
 or report unknown coverage. Do not stop watchers belonging to other tasks.
 
+Reuse one stable, disk-backed state home across related work. Do not create
+a new `--home` for each command, retry or task phase, and never put routine
+tracking databases in `/tmp`, `/dev/shm` or another memory-backed filesystem.
+Each new database repeats the selected roots' baseline and file history.
+If the shared store has contention, inspect its writers and narrow roots;
+do not work around it by proliferating temporary databases. When a separate
+project store is necessary, select one persistent project location and reuse it.
+Do not rotate stores to evade a resource budget.
+
+Tracking defaults to 10000 file candidates per scan and 256 MiB for the database
+plus SQLite sidecars. Checkpoints are before write batches, so a single batch
+and final failure records can exceed the byte budget. A limit stops tracking
+with a visible failure/gap; it never makes omitted files deleted or complete.
+Narrow the selected roots first. Raise `--max-files` / `--max-state-mib` only
+for a known requirement, not automatically after failure. Linux rejects
+tmpfs/ramfs tracking state unless `--allow-memory-state` is explicitly used
+for an intentional bounded experiment. Queries and stop requests remain usable.
+Finished databases are not automatically deleted, migrated or backed up.
+Do not create backup copies as routine cleanup; retain data only for a concrete
+important need or the user's explicit request. Running records are not cleanup permission.
+
 Tracking is the default workflow, not permission to scan the whole home
 folder or clean anything. Select the project and known output directories.
 If the command is unavailable, report the tracking gap; do not silently
@@ -36,29 +57,25 @@ For a command, wrap it before it starts:
 agcc run --agent assistant --root . -- your-agent-command
 ```
 
-For edits made by the current agent's file tools, start a controlled watcher
-yourself through the execution tool. Do not make the user open another terminal
-when background execution is available. On POSIX shells, for example:
+For edits made by the current agent's file tools, start and verify a background
+watcher in one call. Do not make the user open another terminal:
 
 ```sh
-control="task-$(python -B -c 'import uuid; print(uuid.uuid4().hex)')"
-log="$PWD/.agcc-watch-$control.log"
-nohup agcc watch --root "$PWD" --agent assistant --control "$control" \
-  --duration 3600 > "$log" 2>&1 < /dev/null &
-agcc --json watch-status "$control" --wait-ready 30
+agcc --json watch-start --root . --agent assistant --duration 3600 --wait-ready 30
 ```
 
-Retain the control name, log path, and state directory in task context. Keep the
-log in a selected root; its creation is a bootstrap artifact before readiness,
-not proof of prior coverage. Use the same `--home` for related commands when
-overriding the default. Successful baseline metadata is published atomically
+Retain the returned control name, session, private log path and state home.
+Startup failure/timeout reaps only the child started by that invocation; report
+cleanup_failed and any potentially live launcher if reaping fails. Never signal
+a PID copied from another readiness record. Use the same `--home` for related
+commands when overriding the default. Successful baseline metadata is published atomically
 as `<state-home>/watches/<control>/ready.json`. `watch-status --wait-ready` waits
 locally and emits one result, using existing state without taking the baseline's
 write lock or initializing a new database; opening counts toward the deadline.
 The status includes the state home; use `agcc --json doctor` for exact integrity
 diagnostics only when needed, not in the readiness loop.
 Check its exit code, `ready`, `roots`, `excludes`,
-`coverage_known`, `gaps` and expiry before writing. Use a finite timeout suitable
+`coverage_known`, `gap_count`, `tracking_status` and expiry before writing. Use a finite timeout suitable
 for the baseline (up to 300 seconds). Failure needs log inspection and an explicit
 gap report. A PID, fresh heartbeat or running row is not proof of full coverage.
 
@@ -73,10 +90,11 @@ repeated agent tool calls. Polling and short waits remain explicit fallbacks.
 
 Controlled watchers default to a 3600-second limit. Choose an appropriate
 explicit duration; if it expires mid-task, report the gap and start a new
-watcher before more writes. Never reuse a control name. On Windows or an
-execution tool without persistent background jobs, use its supported background
-mechanism with `watch --control`, or wrap writing commands with `run`. If neither
-can cover direct file edits, explain the limitation rather than promising coverage.
+watcher before more writes. Never reuse a control name. `watch-start` manages
+background launching on supported POSIX/Windows runtimes. The original
+`watch --control` remains available for execution tools managing background jobs;
+`run` remains suitable for individual writing commands. Report any unsupported
+background mechanism rather than promising coverage.
 
 Add each known output or temporary directory with another `--root`. Files
 outside those roots are not tracked. Do not follow links into unselected
@@ -94,14 +112,32 @@ JSON fields. Use `--json` only for programmatic parsing, exact raw metadata, or
 coverage decisions. Markdown defaults to 20 routine rows with explicit omission counts;
 use `--rows N` to reduce output, or `--details` for all returned Markdown rows.
 Details mode does not expand query limits or expose every raw field. Retain
-original filters and paginate list/search/history using the displayed offset.
+original filters and paginate list/search/history/sessions using the displayed offset.
 A page is not the whole index. GC/refusal details, recovery records and returned gaps
 are not presentation-capped. Unknown is not zero; child exit success does not
 prove gap-free tracking. `run` preserves child stdout/stderr; its own summary is
 on stderr. Run/watch summaries include local status, recorded gaps and retained
 unresolved-event counts when available; zero counts do not prove full history.
-Sessions prioritize returned running records, not all system sessions.
+Sessions preserve query order; use --status running to select active sessions.
 Never scrape Markdown as a machine API.
+
+Use `agcc --json session SESSION_ID` for a stable compact schema (version 1).
+Run/watch, sessions, diagnostics and control status use the same outcome fields:
+command_status/command_exit_code, tracking_status, gap_count,
+unresolved_event_count and roots as an array. Gap counts are cumulative;
+unresolved counts cover retained events (see count_scope), never lost files.
+Unknown numeric values are null. Legacy sessions without independent outcomes
+remain unknown. Never infer test failure from legacy session_status=failed.
+Run defaults to the child's exit code; --strict-tracking also fails on partial
+tracking without altering the true command result. Watch/stop waits are strict
+by default; --no-strict-tracking accepts ended partial tracking, not failed
+baselines or interrupted/unknown outcomes. No flag removes gap evidence.
+
+Default diagnostics separate expected link boundaries, unavailable short-lived
+metadata, coverage loss and unknown evidence, grouping actual stored event paths.
+Removal notices are not lost files. Classifications from free text are hints;
+unattributed prefixes remain null. Typed notices can overlap with original gaps.
+Use `--details diagnostics --session` or history for original retained evidence.
 
 ```sh
 agcc list --sort size --limit 20
@@ -110,6 +146,15 @@ agcc history path/to/file --limit 20
 agcc sessions
 agcc stats
 ```
+
+For project-scoped inspection, add `--root .` to list/search/history/sessions;
+repeat `--root` for a union. These filters query stored paths without scanning
+and work for deleted directories. Use indexed paths, not symlink aliases.
+`agcc sessions --root . --status running` filters before pagination and includes
+parent watchers covering the project; retain root/status filters with --offset.
+`history --root` retains pathless gaps from overlapping sessions, which may also
+affect their other roots. Use diagnostics --session for full evidence. Stats
+remains global. Markdown times are UTC; JSON keeps numeric timestamps.
 
 Use `--limit` and `--offset` to keep tool output small. Global `--json` and
 `--home` go BEFORE the subcommand. A `run` command preserves child stdout;
@@ -131,9 +176,10 @@ agcc list --session SESSION_ID --sort time --limit 20
 agcc history --session SESSION_ID --limit 20
 ```
 
-`watch-stop` is a cooperative request, not immediate completion and not cleanup
-permission. `--wait` waits locally for finalization and emits one result; normal
-completion returns zero. If it fails, is interrupted, times out or remains
+`watch-stop` is a cooperative request, not cleanup permission. It waits locally
+for finalization for 30 seconds by default; --wait changes the budget and
+--no-wait requests only. Complete tracking returns zero under the default strict
+policy; inspect both outcome dimensions. If it fails, is interrupted, times out or remains
 running, report the status and gaps. Inspect that control once if diagnosis is
 needed, not the entire session list in a loop. Never call `end-session` to
 manufacture success. Preserve the index and classify the known bootstrap log
@@ -209,6 +255,13 @@ are lower bounds. It does not prove which process wrote anything. `--apply` save
 separate directory `review` notes in SQLite, never changes per-file labels or
 creates `disposable` permission. `reviews` are historical observations; remeasure
 before acting. Size alone cannot distinguish cache from business data.
+
+Read measurement_basis before comparing pressure with df. Directory bytes sum
+regular-file st_size, including possible hard-link/nested overlap. Filesystem
+capacity comes from shutil.disk_usage (POSIX statvfs); used_percent is used/total,
+while df_style_used_percent is used/(used+available). Neither measures physical
+allocation, shared extents, compression or Btrfs multi-device layout. These are
+not reclaimable-space estimates; filesystem type stays unknown without evidence.
 
 For an explicit system-wide request, discover across authorized local filesystems
 rather than silently limiting to the current project. Start with metadata-only,

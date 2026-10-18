@@ -24,6 +24,37 @@ behavior. Incomplete startup baselines still refuse child start/readiness.
 `tests/test_partial_native.py` exercises Linux inotify with injected local errors,
 healthy events, retry, retained budget, link replacement and final status.
 `tracker.py` records observations and runs the child command.
+`limits.py` bounds tracking to 10000 file candidates per scan (across selected
+roots and missing-file reconciliation) and 256 MiB of SQLite database/sidecar
+logical bytes by default. Check byte budgets before each scan/native-event write
+batch; one batch and final failure evidence can overshoot. Do not claim an exact
+filesystem quota. A reached limit stops tracking, preserves a gap and skips the
+otherwise repeated final scan/drain. Baseline failure cannot launch the child
+or publish readiness. Interrupted scans never reconcile their unvisited tail as
+missing. Explicit CLI budgets propagate to background children. Preflight rejects
+known Linux tmpfs/ramfs state before creating store or launch directories, unless
+explicitly opted in. Mount detection is metadata-only, boundary-aware and selects
+the deepest mount, including escaped mount paths; unsupported platforms retain
+their previous location behavior. Queries/control requests remain available for
+oversized or memory-backed historical stores. No automatic retention, migration
+or backup is added. `tests/test_tracking_limits.py` uses isolated stores and small
+fixtures for resource limits, child/readiness refusal, retained labels/missing
+state, baseline reuse and Linux mount detection.
+`session_state.py` provides schema-versioned independent command/tracking outcomes.
+Additive `session_results` retains the actual child returncode (negative values
+mean POSIX signals), command status and durable tracking quality. Old read-only
+stores never migrate and return unknown outcomes when these records are absent.
+Final tracking quality and legacy lifecycle commit in one short transaction;
+no scan is enlarged to hold that writer lock. Command results are persisted as
+soon as observed and are not replaced by wrapper failures or strict CLI codes.
+`tests/test_session_quality.py` and `tests/test_quality_cli.py` cover this contract.
+`watch_lifecycle.py` launches finite detached watchers without a shell, waits for
+baseline/readiness, validates its own direct-child PID and coverage, and performs
+bounded failure cleanup only on that child. Cleanup failures remain explicit
+without serializing Popen command arguments. `tests/test_watch_lifecycle.py`
+uses isolated directories and reaps its own children; no recorded foreign PID
+is signalled. watch-stop defaults to a 30-second finalization wait; --no-wait
+still returns the same typed outcomes without changing lifecycle records.
 `watch_control.py` provides task-scoped readiness, compact health queries and
 cooperative stop requests. Atomic readiness publication uses a non-overwriting
 hard link in the private local state directory; unsupported filesystems fail
@@ -48,18 +79,38 @@ and inconsistent history, concurrent writers, read-only use and nested transacti
 partial failures, transactional rollback, link/internal/session protections,
 changed disposable refusal and grouped evidence in isolated workspaces.
 `cli.py` parses commands and dispatches output. The bundled skill is package data.
+Project query roots on list/search/history/sessions are index-only filters,
+not filesystem scopes or cleanup permissions. Match stored paths at directory
+boundaries, union repeated roots, and apply all filters before pagination.
+Missing directories remain queryable without scanning or resolving link aliases.
+Session roots overlap in either direction to include ancestor watchers. Project
+history retains pathless gaps from those sessions without claiming precise path
+attribution. Session status filtering never closes records. Stats stays global.
+`tests/test_query_scope.py` covers these boundaries in isolated temporary stores.
 `output.py` renders compact, escaped Markdown without mutating command results.
-JSON retains original payloads and query limits. Routine rows have a visible
+Time fields use readable UTC in Markdown; numeric JSON timestamps are unchanged.
+Session APIs use normalized roots arrays and schema-versioned summaries rather
+than raw database rows. JSON preserves command result payloads and query limits. Routine rows have a visible
 20-row presentation cap, configurable with --rows or bypassed with --details.
-History supports bounded offset pagination. Running sessions and unknown/active
-automatic marks are prioritized only for display. Run/watch summaries read local
-retained session evidence without changing JSON payloads or child exit codes.
+History and sessions support bounded offset pagination. Sessions preserve query
+order so display caps cannot skip or repeat rows; unknown/active automatic marks
+are prioritized only for display. Run/watch summaries read local
+retained session evidence; strict CLI policies never overwrite child exit codes.
 Zero counts do not prove complete history. GC decisions, filesystem risks,
-recovery and returned error/gap reasons
-do not. Count unknown evaluations over all sync observations, not only changes.
+recovery and errors bypass routine display caps. Original gap text is available
+in details/history. Count unknown evaluations over all sync observations, not only changes.
 Formatting never manufactures gap-free tracking or changes child streams/codes.
+Default diagnostics show compact classification/path-prefix groups. Original
+gap text remains in JSON/history and --details; text-derived classes are hints,
+typed notices may overlap with gaps, and missing detail remains unknown.
+`tests/test_diagnostic_groups.py` covers path attribution and coherent snapshots.
 `pressure.py` inventories directory growth candidates with explicit roots and
-entry/time/depth budgets. Optional SQLite `directory_reviews` records are
+entry/time/depth budgets. It reports measurement_basis: st_size logical directory bytes, shutil.disk_usage
+filesystem capacity, used/total and df-style used/(used+available). Physical
+allocation, shared extents, compression and Btrfs multi-device layout are not
+measured. Original thresholds remain unchanged. `tests/test_measurement_basis.py`
+uses mocked counters and isolated hardlinks to verify the distinction.
+Optional SQLite `directory_reviews` records are
 historical attention notes, separate from file labels and cleanup authorization.
 Thresholds never create disposable reviews. Incomplete byte counts are lower
 bounds; nested candidates and hard links may overlap. Skip symlinks, runtime

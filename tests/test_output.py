@@ -43,6 +43,90 @@ class OutputTests(unittest.TestCase):
         self.assertIn('Incomplete',human.getvalue())
         self.assertIn('queue overflow',human.getvalue())
 
+    def test_timestamp_fields_use_utc_without_mutating_json_or_input(self):
+        data = {'at': 1704164645.987654, 'observed': 0, 'first_seen': -1,
+                'last_seen': 1, 'started': 1704164645, 'ended': None,
+                'heartbeat': 1704164645, 'changed': 1704164645,
+                'created': 1704164645, 'restored': 1704164645,
+                'expires_at': 1704164645, 'last_notified': 1704164645,
+                'heartbeat_age_seconds': 1.25, 'ready': True}
+        original = deepcopy(data)
+        text = markdown(data, 'timestamps')
+        for name in ('at', 'started', 'heartbeat', 'changed', 'created', 'restored',
+                     'expires_at', 'last_notified'):
+            self.assertIn(f'{name}=` 2024-01-02T03:04:05Z `', text)
+        self.assertIn('observed=` 1970-01-01T00:00:00Z `', text)
+        self.assertIn('first_seen=` 1969-12-31T23:59:59Z `', text)
+        self.assertIn('last_seen=` 1970-01-01T00:00:01Z `', text)
+        self.assertIn('ended=unknown', text)
+        self.assertIn('heartbeat_age_seconds=1.25', text)
+        self.assertIn('ready=true', text)
+        self.assertEqual(data, original)
+        raw = io.StringIO()
+        emit(data, True, raw, 'timestamps')
+        self.assertEqual(raw.getvalue(), json.dumps(original, ensure_ascii=True, sort_keys=True) + '\n')
+
+    def test_invalid_timestamp_values_are_unknown_and_safety_details_stay_visible(self):
+        for value in (None, True, False, '1704164645', '<script>\n\x1b', {}, [],
+                      float('nan'), float('inf'), float('-inf'), 10**1000, -10**1000):
+            with self.subTest(value=repr(value)):
+                data = {'complete': False,
+                        'gaps': [{'at': value, 'reason': 'queue overflow <script>\n\x1b'}]}
+                original_json = json.dumps(data, ensure_ascii=True, sort_keys=True) + '\n'
+                text = markdown(data, 'pressure', row_limit=1)
+                self.assertIn('at=unknown', text)
+                self.assertIn('Incomplete', text)
+                self.assertIn('queue overflow', text)
+                self.assertIn('&lt;script&gt;', text)
+                self.assertIn(r'\n', text)
+                self.assertIn(r'\u001b', text)
+                self.assertNotIn('<script>', text)
+                self.assertNotIn('\x1b', text)
+                raw = io.StringIO()
+                emit(data, True, raw, 'pressure')
+                self.assertEqual(raw.getvalue(), original_json)
+
+    def test_timestamp_display_in_history_reviews_diagnostics_and_sessions(self):
+        for command, data, expected in (
+            ('history', [{'at': 0, 'kind': 'gap', 'detail': 'queue overflow'}],
+             'at=` 1970-01-01T00:00:00Z `'),
+            ('reviews', [{'path': '/cache', 'observed': 0}],
+             'observed=` 1970-01-01T00:00:00Z `'),
+            ('auto-marks', [{'path': '/cache', 'observed': 0}],
+             'observed=` 1970-01-01T00:00:00Z `'),
+            ('diagnostics', {'groups': [{'first_seen': 0, 'last_seen': 1,
+                                        'detail': 'queue overflow'}]},
+             'last_seen=` 1970-01-01T00:00:01Z `'),
+            ('sessions', [{'id': 'running', 'status': 'running', 'started': 0, 'ended': None}],
+             'started=` 1970-01-01T00:00:00Z `'),
+        ):
+            with self.subTest(command=command):
+                self.assertIn(expected, markdown(data, command))
+
+    def test_sessions_pagination_keeps_query_offset_and_display_cap_separate(self):
+        data = [{'id': f'session-{i}', 'status': 'running' if i == 2 else 'finished'}
+                for i in range(5)]
+        original = deepcopy(data)
+        text = markdown(data, 'sessions', offset=10, row_limit=2)
+        self.assertIn('Showing 2/5', text)
+        self.assertIn('same query/filters with `--offset 12`', text)
+        self.assertIn('query order preserved', text)
+        self.assertIn('--status running', text)
+        self.assertIn('session-0', text)
+        self.assertIn('session-1', text)
+        self.assertNotIn('session-2', text)
+        self.assertNotIn('session-4', text)
+        self.assertIn('--offset 15', markdown(data, 'sessions', offset=10, row_limit=2, details=True))
+        for offset, expected in enumerate(data):
+            with self.subTest(offset=offset):
+                page = markdown(data[offset:], 'sessions', offset=offset, row_limit=1)
+                self.assertIn(f'id=` {expected["id"]} `', page)
+                self.assertIn(f'--offset {offset + 1}', page)
+                for other in data:
+                    if other is not expected:
+                        self.assertNotIn(f'id=` {other["id"]} `', page)
+        self.assertEqual(data, original)
+
     def test_list_cap_offset_and_json_full_rows(self):
         data = [{'path':f'/p/{i}', 'size':1,'label':'keep','source':'baseline'} for i in range(25)]
         text = markdown(data,'list',offset=100)
@@ -142,16 +226,11 @@ class OutputTests(unittest.TestCase):
         self.assertIn('urgent=true',disk)
 
     def test_active_and_unknown_rows_prioritized_without_mutation(self):
-        data=[{'id':f'finished-{i}','status':'finished'} for i in range(25)]
-        data.append({'id':'active-session-full-id','status':'running','gaps':2})
-        original=deepcopy(data)
-        text=markdown(data,'sessions',row_limit=1)
-        self.assertIn('active-session-full-id',text)
-        self.assertIn('running=1',text)
-        self.assertEqual(data,original)
         marks=[{'path':'/inactive','state':'inactive','evaluation':'known'},
                {'path':'/uncertain','state':'active','evaluation':'unknown'}]
+        original=deepcopy(marks)
         self.assertIn('/uncertain',markdown(marks,'auto-marks',row_limit=1))
+        self.assertEqual(marks,original)
 
     def test_details_sync_includes_unchanged_observations(self):
         data={'observations':[{'path':'/unchanged','rule_id':'x','state':'inactive','evaluation':'known'}],
@@ -175,8 +254,8 @@ class OutputTests(unittest.TestCase):
                 self.assertEqual(metadata['gaps'],1)
                 payload={'session':sid,'exit_code':0}
                 text=markdown(payload,'run',tracking=metadata)
-                self.assertIn('gaps=1',text)
-                self.assertIn('retained_unresolved_events=1',text)
+                self.assertIn('gap_count=1',text)
+                self.assertIn('unresolved_event_count=1',text)
                 self.assertIn('zero does not prove',text)
                 raw=io.StringIO();emit(payload,True,raw,'run',tracking=metadata)
                 self.assertEqual(json.loads(raw.getvalue()),payload)
@@ -231,8 +310,8 @@ class OutputTests(unittest.TestCase):
                 if machine:self.assertEqual(json.loads(proc.stderr.splitlines()[-1])['exit_code'],7)
                 else:
                     self.assertIn('## run',proc.stderr)
-                    self.assertIn('gaps=0',proc.stderr)
-                    self.assertIn('status=',proc.stderr)
+                    self.assertIn('gap_count=0',proc.stderr)
+                    self.assertIn('tracking:',proc.stderr)
 
 
 if __name__ == '__main__':

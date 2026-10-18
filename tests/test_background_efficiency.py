@@ -61,27 +61,59 @@ class BackgroundEfficiencyTests(unittest.TestCase):
         clock = [0.0]
         observer = IdleObserver(clock, dirty)
         statements = []
-        self.store.db.set_trace_callback(statements.append)
+        observer.sql_timeline = []
+        def trace(sql):
+            statements.append(sql)
+            observer.sql_timeline.append((clock[0], sql))
+        self.store.db.set_trace_callback(trace)
         with patch("agentgc.tracker.make_backend", return_value=(observer, None)), \
                 patch("agentgc.tracker.time.monotonic", side_effect=lambda: clock[0]), \
                 contextlib.redirect_stderr(io.StringIO()):
             code, sid = track(self.store, self.scope, "test", duration=duration, reconcile=reconcile)
         return observer, statements, code, sid
 
+    def assert_finalization_transaction(self, observer, expected_times, sid):
+        transactions = []
+        current = None
+        for at, sql in observer.sql_timeline:
+            if sql == "BEGIN IMMEDIATE":
+                current = []
+            if current is not None:
+                current.append((at, sql))
+            if sql == "COMMIT" and current is not None:
+                transactions.append(current)
+                current = None
+        self.assertIsNone(current)
+        # Scans retain their established deadlines. The single extra commit is
+        # final outcome publication, after the final scan, never an idle read.
+        self.assertEqual([items[0][0] for items in transactions], expected_times)
+        final = [sql for _, sql in transactions[-1]]
+        tracking = next(index for index, sql in enumerate(final)
+                        if sql.startswith("UPDATE session_results SET tracking_status='complete'"))
+        lifecycle = next(index for index, sql in enumerate(final)
+                         if sql.startswith("UPDATE sessions SET status='finished'"))
+        self.assertLess(tracking, lifecycle)
+        self.assertIn(sid, final[tracking])
+        self.assertIn(sid, final[lifecycle])
+        self.assertEqual(final[0], "BEGIN IMMEDIATE")
+        self.assertEqual(final[-1], "COMMIT")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "native signal wakeup is Linux-only")
     def test_idle_waits_follow_heartbeat_and_duration_without_empty_transactions(self):
-        observer, statements, code, _ = self.fake_track()
+        observer, statements, code, sid = self.fake_track()
         self.assertEqual(code, 0)
         self.assertEqual(observer.timeouts, [5, 5, 1])
-        self.assertEqual(sum(sql == "BEGIN IMMEDIATE" for sql in statements), 2)
+        self.assertEqual(sum(sql == "BEGIN IMMEDIATE" for sql in statements), 3)
+        self.assert_finalization_transaction(observer, [0, 11, 11], sid)
         with self.assertRaises(OSError):
             os.fstat(observer.wake_fd)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "native signal wakeup is Linux-only")
     def test_reconciliation_and_dirty_scan_deadlines_are_not_delayed(self):
-        observer, statements, _, _ = self.fake_track(duration=8, reconcile=3)
+        observer, statements, _, sid = self.fake_track(duration=8, reconcile=3)
         self.assertEqual(observer.timeouts, [3, 2, 1, 2])
-        self.assertEqual(sum(sql == "BEGIN IMMEDIATE" for sql in statements), 4)
+        self.assertEqual(sum(sql == "BEGIN IMMEDIATE" for sql in statements), 5)
+        self.assert_finalization_transaction(observer, [0, 3, 6, 8, 8], sid)
         observer, _, _, _ = self.fake_track(duration=2, dirty=True)
         self.assertAlmostEqual(observer.timeouts[1], 0.8)
         self.assertEqual(observer.refreshes, 1)

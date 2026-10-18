@@ -30,13 +30,27 @@ agcc --version
 
 仓库为私有时，克隆需要你自己的 GitHub 访问权限。也可以在已有的 Python 虚拟环境中执行 `python -m pip install .`。
 
+## 日常最常用的几条
+
+在项目目录中执行：
+
+```sh
+agcc run --agent assistant --root . -- your-agent-command
+agcc list --root . --sort size --limit 20
+agcc history --root . --limit 20
+agcc sessions --root . --status running
+agcc mark result.json keep --note "需要交付的结果"
+```
+
+`--root .` 将查询限定到当前项目；不传时仍查询共享索引中的所有项目。`agcc --help` 和 `agcc <命令> --help` 提供可复制的常用示例。直接编辑文件的 Agent 应使用下文的后台 `watch` 流程。
+
 ## 运行一个完整示例
 
 在一个测试目录中执行：
 
 ```sh
 agcc run --agent demo --root . -- python -c "from pathlib import Path; Path('scratch.txt').write_text('demo')"
-agcc --json list --sort size
+agcc --json list --root . --sort size
 agcc history scratch.txt
 agcc mark scratch.txt disposable --note "演示已完成，文件没有剩余用途或引用"
 agcc gc scratch.txt
@@ -54,19 +68,44 @@ agcc run --agent assistant --root . -- your-agent-command
 agcc run --agent assistant --root . --root /path/to/outputs -- your-agent-command
 agcc watch --root . --agent existing-session
 agcc watch --root . --duration 60 --backend poll --interval 2
+agcc --json watch-start --root . --agent assistant --wait-ready 30
 agcc watch --root . --agent assistant --control task-UNIQUE_ID --duration 3600
 agcc watch-status task-UNIQUE_ID --wait-ready 30
 agcc watch-stop task-UNIQUE_ID --wait 30
 agcc scan --root .
 ```
 
-`watch --control` 适合 Agent 自行启动后台跟踪：通过执行工具的后台机制启动一次，基线就绪后继续完成其他软件工程任务，结束时再停止；不要每次编辑或查询都新建 watcher。优先复用已确认存活、同一状态目录且覆盖本任务根目录与排除规则的跟踪，不停止其他任务的 watcher。新建时每次使用新的控制名；控制名只允许 1–64 个 ASCII 字母、数字、下划线或连字符，不能复用。
+`watch-start` 直接启动后台 watcher，并在同一次调用中等待基线成功和就绪验证，返回 `control`、会话 ID、覆盖目录、排除项、跟踪质量和私有日志路径。默认自动生成唯一控制名；可显式传 `--control`，但不能复用。启动超时或失败时只回收本次启动的直接子进程，不接管其他 watcher；回收失败会明确报告。默认有限运行 3600 秒。结束时执行 `agcc watch-stop <control>`，默认等待最多 30 秒完成最终扫描；只想发请求用 `--no-wait`。
+
+原来的 `watch --control` 仍可用于执行工具自己管理后台进程。优先复用已确认存活、同一状态目录且覆盖本任务根目录与排除规则的跟踪，不停止其他任务的 watcher。控制名只允许 1–64 个 ASCII 字母、数字、下划线或连字符，不能复用。
 
 基线成功后，完整就绪记录原子发布到 `<状态目录>/watches/<控制名>/ready.json`，包含会话 ID、PID、根目录、排除项和预计到期时间。状态目录可通过 `agcc --json doctor` 查询。`watch-status <控制名> --wait-ready 30` 在一个 CLI 调用内等待就绪，只输出一次结果，不需要 Agent 反复读取整个会话列表。失败或超时返回非零；开始写入前还须核对 `roots`、`excludes`、`coverage_known` 和 `gaps`。旧版就绪记录的排除范围未知，不能仅凭运行状态推定覆盖完整。心跳只是近期活动证据，不证明写入者身份。控制命令以非写入连接读取已有状态，不初始化或迁移数据库，也不因基线的写事务争抢写锁；等待预算包含打开状态的时间。状态尚未初始化时只等待并报告 `starting`，不创建新目录。
 
-`watch-stop` 只发送协作式停止请求，不发送 PID 信号，也不会直接关闭会话记录；`--wait 30` 等待最终扫描并只输出一次结果，只有正常完成才返回零。两个等待选项均接受最多 300 秒，内部使用有上限的退避查询，不产生反复工具调用。受控 watcher 未指定时长时默认最多运行 3600 秒，不是永久后台服务；长任务应显式选择足够的有限时长。就绪超时、跟踪提前结束或扫描缺口必须明确报告；停止跟踪不代表所有业务写入者都已停止，也不授权清理。
+`watch-stop` 通过协作式请求让 watcher 自己最终扫描和结束，不发送记录中的 PID 信号，也不直接关闭会话。默认等待 30 秒，可用 `--wait` 调整、`--no-wait` 只发请求。就绪与停止等待最多 300 秒，内部有界退避，只输出一次结果。默认停止等待要求跟踪质量 `complete` 才返回零；`--no-strict-tracking` 可接受已结束的 `partial`，仍不会接受基线失败、中断或未知结果。停止跟踪不证明所有业务写入者停止，也不授权清理。
 
-`run` 保留子进程的输入、输出和退出码，不使用额外的 shell。命令中需要 shell 运算符时，应显式调用 shell。会话信息写入 stderr，不混入子进程 stdout。包装器把 `AGENTGC_SESSION` 和 `AGENTGC_HOME` 传给子进程。
+`run` 默认保留子进程的输入、输出和退出码，不使用额外的 shell。命令中需要 shell 运算符时，应显式调用 shell。会话信息写入 stderr，不混入子进程 stdout。包装器把 `AGENTGC_SESSION` 和 `AGENTGC_HOME` 传给子进程。
+
+### 命令结果与跟踪质量
+
+命令和跟踪分别显示。例如测试通过，但观察到未捕获元数据的短命文件时：
+
+```text
+command: succeeded; command_exit_code=0
+tracking: partial; gap_count=4; unresolved_event_count=12
+```
+
+`run --strict-tracking` 会在命令成功但跟踪不完整时返回非零；`command_exit_code` 仍保留真实子进程结果。`watch` 和停止等待默认严格，`--no-strict-tracking` 可接受正常结束的部分跟踪。`complete` 只表示正常完成且没有已记录缺口或未解析事件，不证明所有中间历史都被捕获。未启动的命令退出码是 `null`，不伪装成 0；旧会话缺少独立结果时显示 `unknown`。旧生命周期 `session_status=failed` 不能用来判断测试是否失败。
+
+```sh
+agcc --json session SESSION_ID
+agcc --json sessions --root . --limit 20
+agcc diagnostics --session SESSION_ID
+agcc --details diagnostics --session SESSION_ID
+```
+
+会话摘要 JSON 使用 `schema_version=1`，各入口统一提供 `command_exit_code`、`command_status`、`tracking_status`、`gap_count`、`unresolved_event_count` 和数组 `roots`。`gap_count` 是会话累计计数；`unresolved_event_count` 是尚保留的事件计数，`count_scope` 明确两者口径。缺失数值用 `null`。数据库内部仍保留原有生命周期字段，命令与跟踪结果在独立表保存，最终质量和生命周期同时提交。
+
+缺口按链接保护边界 `expected-boundary`、元数据不可用 `metadata-unavailable`、覆盖缺失 `coverage-loss`、未知 `unknown` 分级；删除通知单列 `removal-notice`，不当作丢失文件。默认诊断按实际事件路径的根目录和一级相对父目录聚合；旧自由文本不猜路径，前缀保持未知。复合分类和 typed notice 可能与原缺口同因，不能相加当独立缺口数。即时提示不再打印整串路径，原文仍完整保存在历史中，`--details diagnostics` 展开原始分组。
 
 根目录可以重复指定；相互包含的根目录会合并。默认跟踪当前目录。工作目录仍是启动 `agcc` 时的目录，`--root` 不会切换子进程的工作目录。用 `--exclude cache` 或 `--exclude '*.log'` 排除路径。匹配使用区分大小写的相对路径或路径分量，不是 `.gitignore` 语法。
 
@@ -98,7 +137,7 @@ agcc scan --root .
 
 ## 输出格式
 
-默认输出紧凑 Markdown：命令标题、摘要和项目符号明细，不再输出缩进 JSON。容量使用可读单位；内部签名、摘要和重复测量不在普通摘要中展开。普通列表默认最多显示 20 条已返回记录，明确省略数量；`--rows N` 调整展示条数，`--details` 显示全部已返回 Markdown 明细（不展开所有原始字段），均不扩大 `--limit` 查询范围。`list/search/history` 显示下一页 offset，需保留原筛选条件；会话优先展示已返回记录中的活跃会话，自动标记优先展示未知或活跃状态。JSON 也仍受查询上限约束，不等于完整索引。
+默认输出紧凑 Markdown：命令标题、摘要和项目符号明细，不再输出缩进 JSON。容量使用可读单位；内部签名、摘要和重复测量不在普通摘要中展开。普通列表默认最多显示 20 条已返回记录，明确省略数量；`--rows N` 调整展示条数，`--details` 显示全部已返回 Markdown 明细（不展开所有原始字段），均不扩大 `--limit` 查询范围。`list/search/history/sessions` 显示下一页 offset，需保留原筛选条件；会话保留查询顺序，使用 `--status running` 查看活跃会话，自动标记优先展示未知或活跃状态。JSON 也仍受查询上限约束，不等于完整索引。
 
 ```sh
 agcc list --sort size --limit 20
@@ -108,7 +147,7 @@ agcc --details sync --dry-run           # 包括未变化的规则观察
 agcc --json list --sort size --limit 100   # 脚本解析、原始字段与完整返回记录
 ```
 
-`--json` 输出命令的原始返回字段，不做 Markdown 展示裁剪；不要用 Markdown 做机器解析。GC 候选与拒绝原因、恢复记录、已返回的错误和缺口不加展示层截断。sync 汇总全部观察中的 unknown，即使状态未变化；未完整扫描仍明确提示。路径、备注中的控制字符、双向字符与 HTML 转义显示，原始值从 JSON 查询。`run` 的子命令 stdout/stderr 和退出码不变，agcc 自身的 Markdown 摘要在 stderr；摘要读取本机会话状态、缺口数及尚保留的 unresolved 事件数，读取失败时显示不可用；零计数不证明历史完整，不把退出成功当作无缺口。文件系统风险、GC 拒绝、恢复与缺口明细不受 `--rows` 截断。
+`--json` 不做 Markdown 展示裁剪；不要用 Markdown 做机器解析。`session/sessions` 返回版本化摘要，`sessions` 不再直接序列化数据库行：使用 `session`、`session_status` 和独立命令／跟踪字段，`roots` 为数组。诊断 JSON 和历史仍保留原始证据。GC 拒绝、恢复、文件系统风险和错误不加展示层截断；默认诊断按类别和前缀汇总，`--details` 展开原始缺口。路径、备注中的控制字符、双向字符与 HTML 转义显示，JSON 保留原值。`run` 的子进程 stdout/stderr 不变，默认退出码跟随子进程，严格策略另行选择；摘要在 stderr。零计数不证明历史完整，命令成功不等于跟踪完整。
 
 ## 查询与标记
 
@@ -120,6 +159,11 @@ agcc --json search output
 agcc history path/to/file
 agcc history --session SESSION_ID
 agcc list --session SESSION_ID
+agcc list --root . --sort size --limit 20
+agcc search output --root .
+agcc history --root . --limit 20 --offset 20
+agcc sessions --root . --status running
+agcc sessions --root . --limit 20 --offset 20
 agcc sessions
 agcc stats
 agcc mark path/to/result keep --note "需要交付的结果"
@@ -130,11 +174,17 @@ find ./outputs -type f -print0 | agcc mark review --files-from - --null
 agcc diagnostics --session SESSION_ID
 ```
 
+`list/search/history/sessions` 支持重复 `--root`，按目录并集筛选后再分页；与 `--label`、搜索文字或 `--session` 等已有条件同时生效。文件查询按已索引的实际路径筛选，`project` 不会匹配 `project-old`，路径中的 `%`、`_` 等字符没有通配含义。这只是查询本机记录，不扫描目录、不要求目录仍然存在，也不修改文件分类或会话。查询根目录不解析符号链接别名；使用索引显示的路径。
+
+会话查询按跟踪根目录是否交叠筛选，因此覆盖当前项目的父目录 watcher 也会显示。`--status` 可选 `running/finished/failed/interrupted/closed-by-user`；`--limit` 默认 100，最多 10000，`--offset` 用于翻页。`history --root` 保留交叠会话的无路径缺口；这样的缺口可能也影响同会话的其他目录，不能视为当前项目的精确归属。完整会话诊断仍用 `diagnostics --session`。`stats` 保持共享索引的全局统计。
+
+显式指定 `history <文件>` 时仍只返回该文件的路径事件；查看会话缺口请使用根目录历史或会话诊断。Markdown 中的历史、观察和会话时间显示为 UTC ISO 8601 时间，精确到秒，末尾 `Z` 表示 UTC；未知或无效时间显示 `unknown`。JSON 保留原始数值时间戳，便于脚本处理。
+
 `mark` 支持多路径，以及 UTF-8 换行清单 `--files-from`（`-` 从 stdin 读取）；含换行的文件名使用 `--null` 的 NUL 分隔清单。清单中的相对路径相对于当前工作目录，不展开 glob、不递归目录。批量调用逐文件提交，失败不阻止其他路径；返回成功和失败数量、每个失败原因，部分失败退出码为 1。原来的单路径语法和 JSON 文件记录保持兼容。
 
 新普通文件可立即标记：仅登记明确指定的文件元数据，不扫描父目录，也不补造此前历史。来源为 `manual-observation`，没有写入者或跟踪会话归属。拒绝链接、目录和内部状态；仍不允许直接重标缺失或隔离记录。`disposable` 的备注、活跃会话、Git、硬链接、摘要及已索引文件变化检查保持不变。
 
-`diagnostics --session` 按相同缺口详情合并重复记录，展示次数、首末时间及影响说明；权限、链接边界、路径消失、事件溢出等分类由已有文本推导，仅是排查提示，不能断定正常卸载或临时文件。复合记录保留多个匹配分类及原始详情。未解析事件按种类汇总，并区分事件数和不同路径数：它们**不是丢失文件数**，删除通知可能是正常移除，创建／修改通知可能缺少已消失路径的元数据。最终扫描只能恢复仍存在的状态；历史清理后只汇总尚保留记录。`run/watch` 默认摘要也展示这些诊断，JSON 原返回字段不变。不会自动删除或淡化原始缺口。
+`diagnostics --session` 按类别和路径前缀展示紧凑诊断，`--details` 显示按相同原始详情合并的记录、次数、首末时间及影响说明。权限、链接边界、路径消失、事件溢出等文本分类仅是提示，不能断定正常卸载或临时文件。复合记录保留多个匹配分类及原文。未解析事件区分事件数和不同路径数：它们**不是丢失文件数**，删除通知可能是正常移除。最终扫描只能恢复仍存在的状态；历史清理后只汇总尚保留记录。`run/watch` 摘要显示相同的独立结果和紧凑诊断。不会删除原始缺口。
 
 诊断还显示累计 `gaps`、尚保留的 `retained_gap_events`、缺少详情的 `missing_gap_details` 和分类计数 `categories`。复合记录可能计入多个分类，分类次数不能相加当作独立缺口数。累计计数大于保留记录时明确提示缺失历史；无法还原其分类或影响，也不能断定一定由 prune 导致。保留记录反而超过累计计数时显示不一致，缺失详情数为 unknown，不生成负数或假装正常。汇总在一个只读快照中完成，避免并发跟踪／历史裁剪混用不同时刻的计数；这些字段只描述记录，不证明当前覆盖完整。
 
@@ -211,6 +261,8 @@ agcc --json reviews
 
 `pressure` 对显式选择的目录做有预算的元数据检查，默认最多 200000 个目录项、30 秒；可用 `--max-entries`、`--max-seconds` 调整。它不读取文件内容、不跟随链接、不跨文件系统；每个文件系统需另选根目录。预算耗尽、权限不足或跨挂载跳过时会返回缺口和退出码 1，字节数只表示已观察部分，不是完整占用。计量使用逻辑大小，硬链接与嵌套候选可能重复，不能将全部候选简单相加。
 
+`measurement_basis` 标明统计来源：目录字节为普通文件的 `st_size` 之和；磁盘容量来自 `shutil.disk_usage`（POSIX 为 `statvfs`）。原来的 `used_percent` 使用 `used/total`，另给出 `df_style_used_percent=used/(used+当前用户可用空间)`，保留块等因素可使两者不同。阈值仍按原公式判断。没有测量 Btrfs 底层分配、压缩、共享 extent 或多设备布局，也没有将逻辑字节当成可回收空间；文件系统类型未知时明确标为未知。
+
 任一候选目录达到 100000 个文件也会提醒（`--file-threshold` 可调整），避免漏掉占用不大但文件数暴涨的测试残留。常见包缓存、工具安装、数据库和模型存储也会作为审核候选；包缓存如独立挂载的 `/var/cache/pacman/pkg` 必须显式选择。
 
 默认提醒阈值：`target/build/dist/.next` 为 512 MiB，依赖目录 `node_modules/.venv/venv` 和常见缓存为 1 GiB，`log/logs` 为 256 MiB，隔离目录为 1 MiB，`Backups/docker/containers` 受保护存储为 5 GiB。文件系统容量使用率达到 80% 提醒、90% 紧急。通用分区的余量阈值分别为 `min(5 GiB, 总容量的 10%)`、`min(2 GiB, 总容量的 5%)`；boot 分区分别为 `min(64 MiB, 总容量的 10%)`、`min(32 MiB, 总容量的 5%)`。因此约 1 GiB、使用 49%、剩余约 527 MiB 的分区不会仅因绝对余量被报为紧急。默认只在所选路径所属设备的常见挂载点 `/boot`、`/boot/efi`、`/efi` 检出 boot 用途，不仅凭目录名判断。自定义 EFI 挂载点可用 `agcc pressure --root /custom/efi --disk-role boot`；`sync`、`auto-mark` 也支持此选项，`--disk-role general` 显式选通用策略。选项作用于本次全部所选设备，不同用途建议分开调用。JSON 和 Markdown 均显示用途、判断来源、总容量及实际余量阈值；采样不可用或无效时显示 unknown，不视为零或安全。阈值不是行业标准；目录大小可按项目通过 `--threshold 类别=MiB` 覆盖，类别见 `agcc pressure --help`。
@@ -254,6 +306,17 @@ SIGINT/SIGTERM 会结束直接子进程并做最终扫描；不会声称已结�
 
 状态目录可用 `--home` 或 `AGENTGC_HOME` 指定。默认位置：Linux `$XDG_STATE_HOME/agentgc`（否则 `~/.local/state/agentgc`）；macOS `~/Library/Application Support/agentgc`；Windows `%LOCALAPPDATA%/agentgc`。
 
+同一项目的相关任务应复用固定的磁盘状态目录和已就绪 watcher。不要为每条命令、重试或阶段新建数据库：每个新库都会重新保存所选目录的基线。Linux 的 `scan`、`run`、`watch`、`watch-start` 默认拒绝把状态放在 tmpfs/ramfs（常见于 `/tmp`、`/dev/shm`），在创建数据库或启动命令前报错；确有必要的有限临时实验可显式加 `--allow-memory-state`，仍受预算约束。其他平台暂不检测内存文件系统。
+
+跟踪默认每次扫描最多核对 **10000 个文件候选**，数据库及 SQLite 附属文件合计预算为 **256 MiB**。预算在写入批次前检查，最后一个批次和失败记录可能使实际大小超过预算；这不是精确的文件系统配额。超限时失败并保留缺口，基线超限不会启动子命令或发布就绪记录，也不会把未访问的文件记为删除。已有超预算库仍可查询和停止 watcher，但拒绝新增跟踪。不会自动删记录、轮换新库、迁移或备份。
+
+```sh
+# 优先只选择本次确实需要的目录，复用默认状态目录
+agcc watch-start --root ./src --root ./tests --agent assistant
+# 只有明确需要较大覆盖范围时才提高预算；不是失败后的自动重试办法
+agcc run --root . --max-files 20000 --max-state-mib 512 -- your-command
+```
+
 SQLite 使用 WAL、写入事务和忙等待。目录扫描在写事务外遍历，每批最多核对 128 个文件后提交；消失文件核对也使用有界分页，避免整棵目录树长期占用共享写锁。打开完整的已有数据库只检查结构，不重复写入初始化记录；旧数据库缺少的结构仍会升级。不同的本地进程可使用同一状态目录。跟踪因异常退出会记录缺口；最终扫描不能补回丢失的中间历史。锁长时间不释放时仍可能失败，不保证无限等待。状态目录应放在本地文件系统，不建议放在网络共享盘。POSIX 上新建状态目录使用 `0700`、数据库使用 `0600`；Windows 继承目录访问权限。这不是加密存储。
 
 索引包含绝对路径、Agent 标签和人工备注，请按私有数据管理。不保存完整命令参数，不上传记录，不接入远程服务。不要在 Agent 名称或备注中写入密钥。跟踪只检查文件元数据；仅在审核和隔离核对时流式读取文件内容，缓冲区为 1 MiB。
@@ -280,7 +343,7 @@ agcc skill --install /path/to/your-agent/skills
 agcc skill --install ~/.agents/skills
 ```
 
-全局技能要求 Agent 在本地修改代码或文档、构建、测试、安装依赖、运行脚本和生成产物前主动跟踪，无需用户专门提到清理。只读问答和纯远程操作无需本地 watcher。已有覆盖本任务目录与排除规则的可信跟踪可复用；当前会话直接编辑文件时，可自行在后台启动一次 `watch --control`，用 `watch-status --wait-ready` 等待就绪后再写入，让它跨编辑、构建、测试持续运行，结束时用 `watch-stop --wait` 等待最终扫描并检查本会话的历史与产物。不能把一次事后扫描说成完整跟踪。
+全局技能要求 Agent 在本地修改代码或文档、构建、测试、安装依赖、运行脚本和生成产物前主动跟踪，无需用户专门提到清理。只读问答和纯远程操作无需本地 watcher。已有覆盖本任务目录与排除规则的可信跟踪可复用；直接编辑文件时，执行一次 `watch-start` 等待就绪后再写入，让它跨编辑、构建、测试持续运行，结束时 `watch-stop <control>` 默认等待最终扫描，再检查双维度结果、历史与产物。原 `watch --control` 仍可用。不能把一次事后扫描说成完整跟踪。
 
 Pi 安装后用 `/reload` 刷新技能，或显式输入 `/skill:agentgc`。技能是 Agent 的行为指引，不是自动执行钩子：不能保证所有客户端或模型都遵守，也不会开启全盘常驻监控。已有技能不会覆盖，更新安装副本前应保存自定义内容；仓库与安装副本不会自动同步。主动跟踪不等于主动删除，清理仍需用途与引用检查、用户许可和预览。
 

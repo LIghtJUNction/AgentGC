@@ -11,19 +11,32 @@ import time
 import uuid
 
 from .native import make_backend
+from .diagnostics import classify
 from .paths import Scope, SafetyError, regular, signature
 from .store import Store
 from .tags import write_tag
 from .watch_control import WatchControl
 from .output import inline
+from .limits import TrackingLimit, TrackingLimits
 
 
 class Tracker:
-    def __init__(self, store: Store, scope: Scope, session: str, tag_files: bool = False):
+    def __init__(self, store: Store, scope: Scope, session: str, tag_files: bool = False,
+                 limits: TrackingLimits | None = None):
         self.store, self.scope, self.session = store, scope, session
         self.tag_files = tag_files
         self.errors: list[str] = []
         self.last_gap: str | None = None
+        self.limits = limits or TrackingLimits()
+        self.limit_error: TrackingLimit | None = None
+
+    def check_limits(self, files: int = 0) -> None:
+        try:
+            self.limits.check_scan(files)
+            self.limits.check_state(self.store.home)
+        except TrackingLimit as exc:
+            self.limit_error = exc
+            raise
 
     def sync(self, path: Path, source: str = "session-correlated", token: str | None = None) -> None:
         if not self.scope.includes(path):
@@ -43,6 +56,9 @@ class Tracker:
         except (OSError, SafetyError) as exc:
             if len(self.errors) < 20:
                 self.errors.append(f"{path}: {exc}")
+            kind = ("link-boundary-notice" if isinstance(exc, SafetyError)
+                    and "link or reparse" in str(exc).lower() else "coverage-error-notice")
+            self.store.event(str(path), kind, source, self.session, detail=str(exc))
             return
         stamp = signature(info)
         now = time.time()
@@ -77,6 +93,8 @@ class Tracker:
     def scan(self, source: str = "session-correlated") -> None:
         token = str(uuid.uuid4())
         self.errors = []
+        self.check_limits()
+        seen = 0
         # Walk outside the write transaction and bound each commit. A full tree
         # scan used to monopolize the shared WAL writer for longer than the busy
         # timeout, killing otherwise healthy watchers in unrelated directories.
@@ -84,13 +102,23 @@ class Tracker:
         batch: list[Path] = []
         for root in self.scope.roots:
             for path in self.scope.walk(root, self.errors):
+                seen += 1
+                # Count across all roots; never turn an unvisited tail into
+                # missing-file evidence after reaching the scan budget.
+                try:
+                    self.limits.check_scan(seen)
+                except TrackingLimit as exc:
+                    self.limit_error = exc
+                    raise
                 batch.append(path)
                 if len(batch) == batch_size:
+                    self.check_limits(seen)
                     with self.store.transaction():
                         for candidate in batch:
                             self.sync(candidate, source, token)
                     batch.clear()
         if batch:
+            self.check_limits(seen)
             with self.store.transaction():
                 for candidate in batch:
                     self.sync(candidate, source, token)
@@ -114,6 +142,8 @@ class Tracker:
                         (*params, batch_size),
                     ).fetchall()
                     if rows:
+                        self.check_limits(seen + len(rows))
+                        seen += len(rows)
                         with self.store.transaction():
                             for row in rows:
                                 path = Path(row["path"])
@@ -134,27 +164,41 @@ class Tracker:
         self.last_gap = detail
         self.store.db.execute("UPDATE sessions SET gaps=gaps+1 WHERE id=?", (self.session,))
         self.store.event("", "gap", "tracker", self.session, detail=detail)
-        print(f"- agcc gap: {inline(detail)}", file=sys.stderr)
+        count = self.store.db.execute("SELECT gaps FROM sessions WHERE id=?", (self.session,)).fetchone()[0]
+        category, _ = classify(detail)
+        print(f"- agcc gap: {category}; gap_count={count}; details: "
+              f"{inline('agcc history --session ' + self.session)}", file=sys.stderr)
 
 
 def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interval: float = 1,
           reconcile: float = 60, command: list[str] | None = None, duration: float | None = None,
-          tag_files: bool = False, control: WatchControl | None = None) -> tuple[int, str]:
+          tag_files: bool = False, control: WatchControl | None = None,
+          limits: TrackingLimits | None = None) -> tuple[int, str]:
     if interval < 0.1 or reconcile < interval or (duration is not None and duration <= 0):
         raise SafetyError("interval must be >= 0.1; reconcile >= interval; duration > 0")
+    limits = limits or TrackingLimits()
+    limits.check_state(store.home)
     observer, warning = make_backend(scope, backend)
     if warning:
         print(f"- agcc warning: {inline(warning)}", file=sys.stderr)
     sid = store.start_session(agent, scope.roots, observer.name if observer else "poll",
                               Path(command[0]).name if command else None)
-    tracker = Tracker(store, scope, sid, tag_files)
+    tracker = Tracker(store, scope, sid, tag_files, limits)
     process: subprocess.Popen | None = None
     code, interrupted, pending_scan = 0, False, False
     final_failed = False
+    tracking_started = False
     old_handlers: dict = {}
     wake_fds: tuple[int, int] | None = None
     previous_wakeup: int | None = None
     control_wakeup = False
+
+    def attach_session(exc: BaseException) -> None:
+        # Reporting an error must not replace it with an attribute failure.
+        try:
+            exc.agentgc_session = sid
+        except BaseException:
+            pass
 
     def stop(signum, _frame):
         nonlocal interrupted, code
@@ -204,17 +248,20 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
         if command:
             env = dict(os.environ, AGENTGC_SESSION=sid, AGENTGC_HOME=str(store.home))
             process = subprocess.Popen(command, env=env)  # No shell; preserve argv and exit status.
+            store.command_started(sid)
         # Baseline/setup can be slow; readiness must start with fresh health.
         store.db.execute("UPDATE sessions SET heartbeat=? WHERE id=?", (time.time(), sid))
         print(f"agcc: session {sid}; backend {observer.name if observer else 'poll'}", file=sys.stderr)
         if control:
             control.ready(sid, scope, duration)
+        tracking_started = True
         start = last_scan = last_beat = time.monotonic()
         while not interrupted:
             if control and control.stopping():
                 break
             if process is not None and process.poll() is not None:
                 code = process.returncode
+                store.command_finished(sid, process.returncode)
                 break
             now = time.monotonic()
             if duration is not None and now - start >= duration:
@@ -232,6 +279,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                 notices, dirty, overflow = observer.read(timeout)
                 pending_scan |= dirty
                 if notices or tracker.errors or overflow:
+                    tracker.check_limits()
                     with store.transaction():
                         for path, kind in notices:
                             tracker.sync(path)
@@ -273,10 +321,13 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                 process.kill()
                 process.wait()
     except BaseException as exc:
+        attach_session(exc)
         code = 1
         # Final reconciliation cannot recover intermediate history lost on error.
         # Never turn a failed tracker into a misleading zero-gap session.
         detail = f"Tracking interrupted by {type(exc).__name__}; intermediate history may be incomplete"
+        if isinstance(exc, TrackingLimit):
+            detail += ": " + str(exc)
         try:
             with store.transaction():
                 tracker.gap(detail)
@@ -292,7 +343,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
         raise
     finally:
         try:
-            if observer:
+            if observer and tracker.limit_error is None:
                 # Each read is bounded. Drain queued batches, but do not let an
                 # unrelated continuing writer postpone shutdown indefinitely.
                 deadline = time.monotonic() + 1
@@ -300,6 +351,7 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                     for batch in range(32):
                         notices, _, overflow = observer.read(0)
                         if notices or tracker.errors or overflow:
+                            tracker.check_limits()
                             with store.transaction():
                                 for path, kind in notices:
                                     tracker.sync(path)
@@ -321,33 +373,75 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
                     tracker.gap(f"Final native event read failed: {exc}")
                     final_failed = True
             # Even a failed native read must not suppress reconciliation.
-            tracker.scan()
+            if tracker.limit_error is None:
+                tracker.scan()
+            else:
+                final_failed = True
             final_failed |= bool(tracker.errors) or bool(getattr(observer, 'coverage_errors', []))
-        except BaseException:
+        except BaseException as exc:
+            attach_session(exc)
             final_failed = True
+            detail = f"Final reconciliation failed by {type(exc).__name__}; tracking may be incomplete"
+            if isinstance(exc, TrackingLimit):
+                detail += ": " + str(exc)
+            try:
+                with store.transaction():
+                    tracker.gap(detail)
+            except BaseException:
+                print(f"- agcc gap (not persisted): {inline(detail)}", file=sys.stderr)
             raise
         finally:
-            if observer:
-                observer.close()
-            if previous_wakeup is not None:
-                signal.set_wakeup_fd(previous_wakeup)
-            if wake_fds:
-                for fd in wake_fds:
-                    os.close(fd)
-            for sig, handler in old_handlers.items():
-                signal.signal(sig, handler)
-            if final_failed and command is None and not interrupted:
-                code = 1
-            store.end_session(sid, code, "interrupted" if interrupted else
-                              "failed" if final_failed or code != 0 else "finished")
+            try:
+                if observer:
+                    observer.close()
+                if previous_wakeup is not None:
+                    signal.set_wakeup_fd(previous_wakeup)
+                if wake_fds:
+                    for fd in wake_fds:
+                        os.close(fd)
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
+                if final_failed and command is None and not interrupted:
+                    code = 1
+                if process is not None and process.poll() is not None:
+                    store.command_finished(sid, process.returncode)
+                unresolved = store.db.execute(
+                    "SELECT COUNT(*) FROM events WHERE session_id=? AND kind LIKE '%-unresolved'", (sid,)
+                ).fetchone()[0]
+                gaps = store.db.execute("SELECT gaps FROM sessions WHERE id=?", (sid,)).fetchone()[0]
+                tracking_status = ("interrupted" if interrupted else "failed" if not tracking_started else
+                                   "partial" if final_failed or gaps or unresolved else "complete")
+                with store.transaction():
+                    store.tracking_finished(sid, tracking_status)
+                    store.end_session(sid, code, "interrupted" if interrupted else
+                                      "failed" if final_failed or code != 0 else "finished")
+            except BaseException as exc:
+                attach_session(exc)
+                raise
     return (128 - code if code < 0 else code), sid
 
 
-def scan_once(store: Store, scope: Scope) -> dict:
+def scan_once(store: Store, scope: Scope, limits: TrackingLimits | None = None) -> dict:
+    limits = limits or TrackingLimits()
+    limits.check_state(store.home)
     sid = store.start_session("scan", scope.roots, "snapshot")
-    tracker = Tracker(store, scope, sid)
+    tracker = Tracker(store, scope, sid, limits=limits)
+    failed = False
     try:
         tracker.scan("baseline")
+    except BaseException as exc:
+        failed = True
+        try:
+            exc.agentgc_session = sid
+        except BaseException:
+            pass
+        if isinstance(exc, TrackingLimit):
+            with store.transaction():
+                tracker.gap(str(exc))
+        raise
     finally:
-        store.end_session(sid, 1 if tracker.errors else 0)
+        with store.transaction():
+            store.tracking_finished(sid, "failed" if failed or tracker.errors else "complete")
+            store.end_session(sid, 1 if failed or tracker.errors else 0,
+                              "failed" if failed or tracker.errors else "finished")
     return {"session": sid, "errors": tracker.errors, **store.stats()}

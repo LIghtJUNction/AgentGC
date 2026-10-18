@@ -148,5 +148,6 @@ def reconcile(store, config, roots, dry_run=False, max_entries=None, max_seconds
     return {'mode':'preview' if dry_run else 'sync','project':str(project),'config':config['config'],
             'config_fingerprint':effective['fingerprint'], 'complete':result['complete'],'gaps':result['gaps'],
             'gap_count':result['gap_count'],'entries':result['entries'],'disks':result['disks'],
+            'measurement_basis':result['measurement_basis'],
             'changes':changed,'notifications':notifications,'observations':list(updates.values()),
             'note':'Local rule observations only; manual labels, file history and cleanup permissions are unchanged'}

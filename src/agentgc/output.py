@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import html
 import re
 import unicodedata
 
 DISPLAY_LIMIT = 20
+TIME_FIELDS = frozenset(('at', 'observed', 'first_seen', 'last_seen', 'started', 'ended',
+                         'heartbeat', 'changed', 'created', 'restored', 'expires_at',
+                         'last_notified'))
 DISK_FIELDS = ('root','disk_role','disk_role_source','capacity_status','capacity_reason',
-               'total_bytes','used_percent','free_bytes','attention_free_bytes','urgent_free_bytes',
+               'total_bytes','used_bytes','used_percent','df_style_used_percent','free_bytes','attention_free_bytes','urgent_free_bytes',
                'byte_attention','byte_urgent','inode_status','total_inodes','free_inodes',
                'inode_used_percent','inode_attention','inode_urgent','inode_reason','attention','urgent')
 
@@ -46,6 +50,18 @@ def size(value) -> str:
     return f"{value} B"
 
 
+def timestamp(value) -> str:
+    """Render epoch seconds in UTC; malformed metadata stays visibly unknown."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 'unknown'
+    try:
+        moment = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=value)
+        text = moment.isoformat(timespec='seconds')
+    except (OverflowError, ValueError):
+        return 'unknown'
+    return inline(text.replace('+00:00', 'Z'))
+
+
 def fields(row, names) -> str:
     parts = []
     for name in names:
@@ -56,7 +72,9 @@ def fields(row, names) -> str:
             continue
         if name == 'path':
             parts.append(inline(value))
-        elif name in ('size', 'bytes', 'state_bytes', 'total_bytes', 'free_bytes',
+        elif name in TIME_FIELDS:
+            parts.append(f"{name}={timestamp(value)}")
+        elif name in ('size', 'bytes', 'state_bytes', 'total_bytes', 'used_bytes', 'free_bytes',
                       'attention_free_bytes', 'urgent_free_bytes', 'bytes_to_quarantine', 'bytes_freed'):
             parts.append(f"{name}={size(value)}")
         elif isinstance(value, dict):
@@ -72,7 +90,8 @@ ROW_FIELDS = {
     'list': ('path','size','label','source','note'),
     'search': ('path','size','label','source','note'),
     'history': ('id','at','kind','path','source','session_id','size','detail'),
-    'sessions': ('id','status','agent','backend','roots','gaps','exit_code'),
+    'sessions': ('session','id','command_status','command_exit_code','tracking_status','gap_count',
+                 'unresolved_event_count','session_status','status','agent','backend','started','ended','roots'),
     'quarantine': ('id','status','original','destination'),
     'recover': ('id','status','original','destination','reason','action'),
     'reviews': ('path','category','bytes','files','attention','complete','observed','note'),
@@ -89,6 +108,22 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         text = fields(row, names)
         if text:
             lines.append('- ' + text)
+
+    def outcome(row):
+        if 'command_status' in row:
+            lines.append(f'- command: {inline(row["command_status"])}; command_exit_code={inline(row.get("command_exit_code"))}')
+        if 'tracking_status' in row:
+            lines.append(f'- tracking: {inline(row["tracking_status"])}; gap_count={inline(row.get("gap_count"))}; unresolved_event_count={inline(row.get("unresolved_event_count"))}')
+
+    def disk_rows(items):
+        rows(items, DISK_FIELDS, limit=None)
+        for item in items:
+            basis = item.get('measurement_basis')
+            if basis:
+                summary(basis, ('source','backend','used_percent_formula','df_style_used_percent_formula',
+                                'physical_allocation','shared_extents','filesystem_type'))
+        if any(item.get('measurement_basis') for item in items):
+            lines.append('- Capacity counters and df-style percentages use the displayed formulas. Physical allocation, compression and shared extents are not measured; these are not reclaimable-space estimates.')
 
     def rows(items, names, limit=display_limit, pagination=False):
         shown = items if limit is None else items[:limit]
@@ -130,7 +165,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         changes = row.get('changes', [])
         unknown = [r for r in observations if r.get('evaluation') == 'unknown']
         summary(row, ('mode','project','config','complete','entries'))
-        rows(row.get('disks', []), DISK_FIELDS, limit=None)
+        disk_rows(row.get('disks', []))
         states = ', '.join(f'{k}={v}' for k,v in sorted(Counter(r.get('state','unknown') for r in observations).items()))
         lines.append(f'- Observations={len(observations)}; changes={len(changes)}; unknown={len(unknown)}; notifications={len(row.get("notifications", []))}. {states}')
         warnings(row)
@@ -143,9 +178,11 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
             rows(row['notifications'], ('path','rule_id','action','message','state','evaluation'))
         lines.append('- Automatic suggestions are separate from manual labels; not cleanup permission.')
 
-    def diagnostic(row):
-        summary(row, ('id','status','backend','gaps','retained_gap_events','missing_gap_details',
-                      'gap_count_consistent','retained_unresolved_events','unresolved_paths','note'))
+    def diagnostic(row, show_outcome=True):
+        if show_outcome:
+            outcome(row)
+        summary(row, ('id','backend','retained_gap_events','missing_gap_details',
+                      'gap_count_consistent','unresolved_paths'))
         if row.get('missing_gap_details'):
             lines.append('- **Missing history**: some counted gaps have no retained detail; their categories and impacts are unknown.')
         if row.get('gap_count_consistent') is False:
@@ -153,7 +190,23 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         if row.get('categories'):
             lines.append('### Gap categories (overlapping counts)')
             rows(row['categories'], ('category','events'), limit=None)
-        rows(row.get('groups', []), ('category','count','first_seen','last_seen','impact','detail'), limit=None)
+        if 'compact_groups' in row:
+            lines.append('### Tracking evidence by class and path prefix')
+            compact = row['compact_groups']
+            names = ('classification','severity','root','prefix','gap_events','unresolved_events',
+                     'notice_events','paths','categories')
+            if details:
+                rows(compact, names, limit=None)
+            else:
+                rows([g for g in compact if g['severity'] == 'error'], names, limit=None)
+                rows([g for g in compact if g['severity'] != 'error'], names)
+            lines.append('- ' + inline(row.get('compact_note', 'Counts may overlap; not lost files.')))
+            sid = row.get('session', row.get('id'))
+            lines.append('- Raw evidence: ' + inline(f'agcc --details diagnostics --session {sid}') +
+                         ' or ' + inline(f'agcc history --session {sid}') + '. Counts are retained events, not lost files.')
+        if details or 'compact_groups' not in row:
+            rows(row.get('groups', []), ('category','count','first_seen','last_seen','impact','detail'), limit=None)
+            summary(row, ('status','gaps','retained_unresolved_events','note'))
         rows(row.get('unresolved', []), ('kind','events','paths'), limit=None)
 
     if isinstance(data, list):
@@ -161,13 +214,12 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
             lines.append(f'- Returned={len(data)}; active={sum(r.get("state") == "active" for r in data)}; unknown={sum(r.get("evaluation") == "unknown" for r in data)}.')
             data = sorted(data, key=lambda r: (r.get('evaluation') != 'unknown', r.get('state') != 'active'))
         if command == 'sessions':
-            lines.append(f'- Returned={len(data)}; running={sum(r.get("status") == "running" for r in data)}; running sessions shown first.')
-            data = sorted(data, key=lambda r: r.get('status') != 'running')
+            lines.append(f'- Returned={len(data)}; running={sum(r.get("session_status", r.get("status")) == "running" for r in data)}; query order preserved. Use `--status running` to select running sessions.')
         names = ROW_FIELDS.get(command)
         if names is None:
             names = tuple(dict.fromkeys(k for item in data if isinstance(item,dict) for k in item))
         rows(data, names, limit=None if command in ('quarantine','recover') else display_limit,
-             pagination=command in ('list','search','history'))
+             pagination=command in ('list','search','history','sessions'))
         if command in ('list','search','history'):
             lines.append('- Sources describe observations, not proven writers. Sizes are logical bytes.')
         if command in ('reviews','auto-marks'):
@@ -180,6 +232,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
             rows(data['items'], ('path','label','note','tag_status'))
             warnings(data)
         elif data.get('error'):
+            outcome(data)
             warnings(data)
         elif command == 'gc':
             items = data.get('items', [])
@@ -196,11 +249,11 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
         elif command == 'pressure':
             summary(data, ('mode','roots','complete','entries','saved_reviews'))
             warnings(data)
-            rows(data.get('disks', []), DISK_FIELDS, limit=None)
+            disk_rows(data.get('disks', []))
             items = data.get('items', [])
             lines.append(f'- Candidates={len(items)}; attention={sum(bool(r.get("attention")) for r in items)}.')
             rows(sorted(items, key=lambda r: not r.get('attention')), ('path','category','bytes','files','attention','reasons','complete'))
-            lines.append('- Logical bytes; nested candidates/hard links may overlap. Review is not cleanup permission.')
+            lines.append('- Directory bytes sum st_size; nested candidates/hard links may overlap. Physical allocation and shared extents are not measured. Review is not cleanup permission.')
         elif command == 'rules':
             summary(data, ('project','config','fingerprint','path','note'))
             rules = data.get('rules', data.get('matching_rules', []))
@@ -216,10 +269,16 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
                 'stats': ('files','bytes','events','active_sessions','labels'),
                 'doctor': ('integrity','home','state_bytes','native_backend','files','bytes','events','active_sessions','labels'),
                 'run': ('session','exit_code'), 'watch': ('session','exit_code'),
+                'session': ('session','roots','agent','backend','started','ended'),
+                'watch-start': ('session','control','ready','roots','excludes','coverage_known','log'),
+                'watch-status': ('session','control','state','ready','roots','excludes','coverage_known','heartbeat_age_seconds','expires_at'),
+                'watch-stop': ('session','control','state','stop_requested','timed_out','roots'),
                 'restore': ('id','path','status','label'),
             }
             names = selectors.get(command, tuple(k for k in data if k not in ('automatic','errors','error','gaps','pending_recovery')))
             summary(data, names)
+            if command in ('run','watch','session','watch-start','watch-status','watch-stop'):
+                outcome(data)
             warnings(data)
             if command in ('stats', 'doctor', 'scan'):
                 lines.append('- Sizes are logical bytes, not unique physical disk usage.')
@@ -227,11 +286,11 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
                 if tracking is None:
                     lines.append('- Tracking gaps: unavailable; query `history --session`/`sessions`.')
                 else:
-                    diagnostic(tracking)
+                    diagnostic(tracking, show_outcome='command_status' not in data)
                     lines.append('- Recorded counts only; zero does not prove complete history or writer identity.')
             if command == 'watch-stop':
-                if data.get('status') == 'finished':
-                    lines.append('- Watcher finalization finished; this is not proof that application writers stopped or cleanup permission.')
+                if data.get('status') in ('finished', 'failed', 'interrupted', 'closed-by-user'):
+                    lines.append('- Watcher finalization ended; see tracking quality above. This is not proof that application writers stopped or cleanup permission.')
                 else:
                     lines.append('- Stop requested only; wait for the session final scan to finish.')
             if 'automatic' in data:
