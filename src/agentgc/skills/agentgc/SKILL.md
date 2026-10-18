@@ -72,6 +72,11 @@ commands when overriding the default. Successful baseline metadata is published 
 as `<state-home>/watches/<control>/ready.json`. `watch-status --wait-ready` waits
 locally and emits one result, using existing state without taking the baseline's
 write lock or initializing a new database; opening counts toward the deadline.
+Temporary SQLite BUSY/LOCKED while opening an initializing store is pending,
+not readiness. watch-start keeps its original bounded wait and can return a
+pending_reason; it does not reap a healthy child merely for that transient lock.
+Corruption and unsupported versions still fail. Do not rotate state homes or
+automatically increase wait/resource budgets to work around startup contention.
 The status includes the state home; use `agcc --json doctor` for exact integrity
 diagnostics only when needed, not in the readiness loop.
 Check its exit code, `ready`, `roots`, `excludes`,

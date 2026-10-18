@@ -48,8 +48,10 @@ def _finish_owned(child: subprocess.Popen) -> str | None:
 def _status(home: Path, control: str) -> dict:
     try:
         store = Store(home, read_only=True)
-    except (FileNotFoundError, StoreNotReady):
+    except FileNotFoundError:
         return starting_status(home, control)
+    except StoreNotReady as exc:
+        return {**starting_status(home, control), 'pending_reason': str(exc)}
     try:
         return watch_status(store, control)
     finally:

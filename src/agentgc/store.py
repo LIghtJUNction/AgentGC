@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS quarantine (
 
 
 class StoreNotReady(SafetyError):
-    """An existing database has not completed its first initialization."""
+    """Existing state is initializing or temporarily busy for a nonblocking reader."""
 
 
 def _query_roots(roots: list[str | Path] | None) -> tuple[Path, ...]:
@@ -91,18 +91,28 @@ class Store:
         if read_only:
             if not self.path.exists():
                 raise FileNotFoundError(self.path)
-            self.db = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True,
-                                      timeout=0, isolation_level=None)
-            self.db.row_factory = sqlite3.Row
+            connection = None
             try:
+                connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True,
+                                             timeout=0, isolation_level=None)
+                self.db = connection
+                self.db.row_factory = sqlite3.Row
                 self.db.execute("PRAGMA query_only=ON")
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
                 if version == 0:
                     raise StoreNotReady("State database initialization is incomplete")
                 if version != 1:
                     raise SafetyError(f"Unsupported database version: {version}")
+            except sqlite3.OperationalError as exc:
+                if connection is not None:
+                    connection.close()
+                code = getattr(exc, 'sqlite_errorcode', None)
+                if isinstance(code, int) and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise StoreNotReady("State database is temporarily busy; readiness is not yet verified") from exc
+                raise
             except BaseException:
-                self.db.close()
+                if connection is not None:
+                    connection.close()
                 raise
             return
         self.db = sqlite3.connect(self.path, timeout=10, isolation_level=None)

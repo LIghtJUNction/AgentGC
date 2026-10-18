@@ -8,6 +8,11 @@ Opening a complete initialized WAL store checks schema metadata without acquirin
 an initialization writer lock. Missing schema-v1 objects still receive additive
 upgrades; fresh initialization publishes its version in the schema transaction.
 Initialization errors close the connection.
+Nonblocking read-only opening maps SQLite BUSY/LOCKED during initialization to
+StoreNotReady, so startup polling uses its existing deadline instead of reaping
+a healthy child on a transient read lock. Other database errors still propagate.
+Real exclusive-lock regressions verify pending status, eventual readiness and
+corruption refusal without increasing timeouts or creating readiness evidence.
 Control clients use its existing-database read-only mode, with no schema writes,
 migration, directory creation or writer-lock wait. Database opening counts toward
 client wait deadlines; missing/version-zero initialization remains pending.

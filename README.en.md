@@ -87,6 +87,11 @@ After a successful baseline, the complete readiness record is published atomical
 
 ### Command outcomes and tracking quality
 
+When watch-start opens an initializing store, temporary SQLite BUSY/LOCKED is
+pending rather than ready, with an optional pending_reason. It keeps the original
+wait deadline instead of reaping a healthy child for a transient read lock.
+Corruption and unsupported versions still fail; wait budgets are not enlarged.
+
 Command and tracking outcomes are independent. A successful test with missing short-lived metadata can report:
 
 ```text

@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -121,6 +123,54 @@ class WatchLifecycleTests(unittest.TestCase):
         self.assertFalse((self.home / "watches/owned/stop").exists())
         stopped, code = control_command(self.home, "owned", stop=True, seconds=5)
         self.assertEqual(code, 0, stopped)
+
+    def locked_initializing_store(self):
+        self.home.mkdir()
+        database = sqlite3.connect(self.home / 'index.sqlite3', check_same_thread=False)
+        self.addCleanup(database.close)
+        database.execute('PRAGMA user_version=1')
+        database.execute('BEGIN EXCLUSIVE')
+        return database
+
+    def test_exclusive_initialization_lock_is_pending_without_faking_readiness(self):
+        database = self.locked_initializing_store()
+        result = _status(self.home, 'initializing')
+        self.assertEqual(result['state'], 'starting')
+        self.assertFalse(result['ready'])
+        self.assertIsNone(result['session'])
+        self.assertIn('temporarily busy', result['pending_reason'])
+        self.assertTrue(database.in_transaction)
+        self.assertFalse((self.home / 'watches').exists())
+
+    def test_busy_connect_is_also_pending_without_an_initialized_connection(self):
+        self.locked_initializing_store()
+        busy = sqlite3.OperationalError('database is locked')
+        busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        with patch('agentgc.store.sqlite3.connect', side_effect=busy):
+            result = _status(self.home, 'opening')
+        self.assertFalse(result['ready'])
+        self.assertIn('temporarily busy', result['pending_reason'])
+
+    def test_background_start_waits_for_initialization_lock_instead_of_reaping_healthy_child(self):
+        database = self.locked_initializing_store()
+        release = threading.Timer(0.3, database.rollback)
+        release.start()
+        try:
+            result, code = self.start(control='initializing')
+        finally:
+            release.join(timeout=2)
+        self.assertFalse(release.is_alive())
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['ready'])
+        self.assertIsNone(self.children[0].poll())
+        stopped, code = control_command(self.home, result['control'], stop=True, seconds=5)
+        self.assertEqual(code, 0, stopped)
+
+    def test_corrupt_existing_database_is_not_reported_as_pending(self):
+        self.home.mkdir()
+        (self.home / 'index.sqlite3').write_bytes(b'not a SQLite database')
+        with self.assertRaises(sqlite3.DatabaseError):
+            _status(self.home, 'corrupt')
 
     def test_failed_launch_name_also_cannot_be_reused(self):
         result, code = start_watch(self.home, [self.root], backend="poll", seconds=0,
