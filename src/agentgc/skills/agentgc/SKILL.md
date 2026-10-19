@@ -40,6 +40,12 @@ for a known requirement, not automatically after failure. Linux rejects
 tmpfs/ramfs tracking state unless `--allow-memory-state` is explicitly used
 for an intentional bounded experiment. Queries and stop requests remain usable.
 Finished databases are not automatically deleted, migrated or backed up.
+For an explicitly authorized history cleanup, preview `agcc prune --days 30
+--compact`, then use `--apply` only for the approved retention window. Compaction
+preserves indexes, labels, sessions and quarantine records; it requires temporary
+disk space. Inspect `events` separately from `compaction.status`: pruning can
+commit before compaction fails on a busy connection. Do not close sessions or
+rotate stores to make compaction or tracking budgets pass.
 Do not create backup copies as routine cleanup; retain data only for a concrete
 important need or the user's explicit request. Running records are not cleanup permission.
 

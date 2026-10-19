@@ -154,8 +154,8 @@ class Store:
         self.db.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
-        self.db.execute("BEGIN IMMEDIATE")
+    def transaction(self, *, immediate: bool = True) -> Iterator[None]:
+        self.db.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
         except BaseException:

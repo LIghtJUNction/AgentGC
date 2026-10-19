@@ -235,6 +235,8 @@ def parser() -> argparse.ArgumentParser:
     cmd.add_argument("--apply", action="store_true")
     cmd.add_argument("--rule-history", action="store_true",
                      help="also prune old rule-transition events; skip these while any session is running")
+    cmd.add_argument("--compact", action="store_true",
+                     help="also reclaim free SQLite pages after pruning; requires --apply to write")
     cmd = sub.add_parser("skill", help="print or install the bundled Agent Skill")
     cmd.add_argument("--install", type=Path, help="parent skills directory; never overwrite an existing skill")
     for name, cmd in sub.choices.items():
@@ -455,10 +457,13 @@ def execute(args, store: Store) -> tuple[object, int]:
         condition = "at<? AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status<>'running'))"
         result = {"mode": "apply" if args.apply else "preview",
                   "note": "Index, labels, and quarantine journal are retained. SQLite reuses freed pages."}
-        with store.transaction():
-            result["events"] = store.db.execute("SELECT COUNT(*) FROM events WHERE " + condition, (cutoff,)).fetchone()[0]
+        # Scan in table order: the OR's session-index plan otherwise performs
+        # millions of random table lookups on a large shared history.
+        with store.transaction(immediate=args.apply):
             if args.apply:
-                store.db.execute("DELETE FROM events WHERE " + condition, (cutoff,))
+                result["events"] = store.db.execute("DELETE FROM events NOT INDEXED WHERE " + condition, (cutoff,)).rowcount
+            else:
+                result["events"] = store.db.execute("SELECT COUNT(*) FROM events NOT INDEXED WHERE " + condition, (cutoff,)).fetchone()[0]
             if args.rule_history:
                 # Rule events have no session identity. Protect all of them while
                 # any session is running, including stale sessions, under this lock.
@@ -468,10 +473,16 @@ def execute(args, store: Store) -> tuple[object, int]:
                 if running:
                     history["reason"] = "A running session exists; rule history cannot be attributed to a completed session."
                 elif table_exists(store, "auto_events"):
-                    history["events"] = store.db.execute("SELECT COUNT(*) FROM auto_events WHERE at<?", (cutoff,)).fetchone()[0]
                     if args.apply:
-                        store.db.execute("DELETE FROM auto_events WHERE at<?", (cutoff,))
+                        history["events"] = store.db.execute("DELETE FROM auto_events WHERE at<?", (cutoff,)).rowcount
+                    else:
+                        history["events"] = store.db.execute("SELECT COUNT(*) FROM auto_events WHERE at<?", (cutoff,)).fetchone()[0]
                 result["rule_history"] = history
+        if args.compact:
+            from .retention import compact
+            result["compaction"] = compact(store, apply=args.apply)
+            if result["compaction"]["status"] == "failed":
+                return result, 1
         return result, 0
     raise SafetyError(f"Unknown command: {action}")
 

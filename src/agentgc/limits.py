@@ -86,7 +86,9 @@ class TrackingLimits:
         if size >= self.max_state_mib * MIB:
             raise TrackingLimit(
                 f"Tracking state budget reached ({size} bytes; --max-state-mib {self.max_state_mib:g}). "
-                "Tracking stopped; existing records are retained. Review this store or explicitly choose "
+                "Tracking stopped; existing records are retained. Preview authorized history retention with "
+                "'agcc prune --days 30 --compact'; pruning and compaction require explicit --apply. "
+                "Review this store or explicitly choose "
                 "a larger budget. Do not rotate to fresh databases to bypass the limit."
             )
 

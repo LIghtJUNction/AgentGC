@@ -338,9 +338,13 @@ agcc prune --days 30
 agcc prune --days 30 --apply
 agcc prune --days 30 --rule-history          # Also preview old rule transitions
 agcc prune --days 30 --rule-history --apply
+agcc prune --days 30 --compact              # Preview pruning and compaction
+agcc prune --days 30 --compact --apply      # Explicitly compact SQLite after pruning
 ```
 
 `prune` removes old events from ended sessions while preserving the file index, cumulative activity counts, labels, sessions, and quarantine journal. Events for running sessions are retained. `--rule-history` explicitly opts into previewing or pruning old rule-transition events; current automatic marks, growth baselines and configuration are retained. Because transitions have no session identity, rule history is skipped with a reason whenever any session is still `running`, including stale sessions. Default pruning does not touch rule history or schedule automatic retention. Unknown timestamps and events within the retention window are preserved. Rule-history pruning is irreversible too. Pruned detailed history can no longer be queried; filtering files by session also depends on retained events. SQLite reuses free pages but does not guarantee that the database file immediately shrinks.
+
+Preview uses a read transaction without competing for the tracking write lock. Apply reports the deletion count directly instead of counting the entire history before deleting it. Events are scanned in table order to avoid random session-index lookups on large stores. `--compact` is preview-only unless combined with `--apply`; apply runs SQLite `VACUUM` and truncates the WAL, reporting logical database and sidecar bytes before and after. Compaction needs temporary disk space and can fail while other connections are busy. A nonzero exit then reports committed pruning separately through `events` and `compaction.status`; retry when connections are idle. Compaction preserves the file index, labels and quarantine journal, never closes sessions, and does not guarantee that the remaining index fits the tracking budget.
 
 ## Installing the skill
 

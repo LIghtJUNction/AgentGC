@@ -155,7 +155,7 @@ retention for old `auto_events`, without changing current marks or baselines.
 Because those transitions have no session identity, skip all rule-history pruning
 while any session remains running, even with an expired heartbeat. Count, guard
 and delete share the same immediate transaction. Default prune behavior and its
-JSON shape remain unchanged; no optional tables are created by pruning. Incomplete observations cannot resolve attention or missing
+JSON shape remain unchanged without `--compact`; no optional tables are created by pruning. Prune previews use a deferred read transaction, so existing WAL writers remain usable. Apply uses the DELETE row count instead of a redundant count pass; events scan in table order rather than the OR predicate's random session-index lookups. Explicit `--compact --apply` checkpoints, vacuums, and truncates WAL outside the pruning transaction. Busy checkpoints and SQLite errors produce a separate failed compaction result and nonzero exit without hiding the committed prune count. No manual file replacement, store rotation, session closing or payload deletion occurs. `tests/test_retention.py` checks read concurrency, rollback, protected history, real byte reclamation and busy-compaction retry in isolated stores. Incomplete observations cannot resolve attention or missing
 paths. Rule updates carry fingerprints; transitions retain local history.
 
 The package needs Python 3.11 or later. Runtime dependencies: none.
