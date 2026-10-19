@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 import signal
@@ -195,21 +196,17 @@ def track(store: Store, scope: Scope, agent: str, backend: str = "auto", interva
 
     def attach_session(exc: BaseException) -> None:
         # Reporting an error must not replace it with an attribute failure.
-        try:
+        with contextlib.suppress(BaseException):
             exc.agentgc_session = sid
-        except BaseException:
-            pass
 
     def stop(signum, _frame):
         nonlocal interrupted, code
         interrupted, code = True, 128 + signum
         if process is not None and process.poll() is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 # Keep the child's process group and inherited terminal intact.
                 # On SIGINT terminals normally signal both; forwarding is harmless.
                 process.send_signal(signum if os.name != "nt" else signal.SIGTERM)
-            except ProcessLookupError:
-                pass
 
     try:
         tracker.scan("baseline")
@@ -431,10 +428,8 @@ def scan_once(store: Store, scope: Scope, limits: TrackingLimits | None = None) 
         tracker.scan("baseline")
     except BaseException as exc:
         failed = True
-        try:
+        with contextlib.suppress(BaseException):
             exc.agentgc_session = sid
-        except BaseException:
-            pass
         if isinstance(exc, TrackingLimit):
             with store.transaction():
                 tracker.gap(str(exc))
