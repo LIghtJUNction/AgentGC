@@ -119,6 +119,8 @@ def parser() -> argparse.ArgumentParser:
                                         "watch": "track already-running tools",
                                         "watch-start": "start a background watcher and wait for verified readiness"}[name])
         cmd.add_argument("--root", action="append", help="watch root; repeat for more roots; default: current directory")
+        cmd.add_argument("--include-generated", action="store_true",
+                         help="also track build, dependency and cache trees (excluded by default)")
         cmd.add_argument("--exclude", action="append", default=[], help="exclude a relative glob or a matching path component")
         cmd.add_argument('--max-files', type=file_budget, default=10000,
                          help='maximum file candidates per scan across all roots (default: 10000); excess fails visibly')
@@ -233,6 +235,8 @@ def parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("prune", help="preview or prune old events from completed sessions")
     cmd.add_argument("--days", type=positive, default=30)
     cmd.add_argument("--apply", action="store_true")
+    cmd.add_argument("--file-index", action="store_true",
+                     help="also forget old unmarked file metadata without retained events; protect active roots")
     cmd.add_argument("--rule-history", action="store_true",
                      help="also prune old rule-transition events; skip these while any session is running")
     cmd.add_argument("--compact", action="store_true",
@@ -296,14 +300,15 @@ def execute(args, store: Store) -> tuple[object, int]:
                            max_entries=args.max_entries, max_seconds=args.max_seconds, disk_role=args.disk_role)
         return result, 0 if result['complete'] else 1
     if action in ("scan", "run", "watch"):
-        scope = Scope(args.root or [Path.cwd()], store.home, args.exclude)
+        scope = Scope(args.root or [Path.cwd()], store.home, args.exclude, include_generated=args.include_generated)
         limits = TrackingLimits(args.max_files, args.max_state_mib)
+        summary_scope = Scope(scope.roots, store.home, args.exclude, include_generated=True)
         if action == "scan":
             result = scan_once(store, scope, limits)
             result.update(session_result(store, result['session']))
             if config['config'] and config['auto']['enabled'] and action in config['auto']['after']:
                 try:
-                    result['automatic'] = reconcile(store,config,scope.roots,include=scope.includes,excludes=scope.excludes)
+                    result['automatic'] = reconcile(store,config,scope.roots,include=summary_scope.includes,excludes=summary_scope.excludes)
                 except (OSError, ValueError, sqlite3.Error) as exc:
                     result['automatic'] = {'complete':False,'error':str(exc)}
             return result, 1 if result["errors"] else 0
@@ -326,7 +331,7 @@ def execute(args, store: Store) -> tuple[object, int]:
         result = {**outcome, "exit_code": code, 'cli_exit_code': code}
         if config['config'] and config['auto']['enabled'] and action in config['auto']['after']:
             try:
-                result['automatic'] = reconcile(store,config,scope.roots,include=scope.includes,excludes=scope.excludes)
+                result['automatic'] = reconcile(store,config,scope.roots,include=summary_scope.includes,excludes=summary_scope.excludes)
             except (OSError, ValueError, sqlite3.Error) as exc:
                 result['automatic'] = {'complete':False,'error':str(exc)}
         return result, code
@@ -409,8 +414,15 @@ def execute(args, store: Store) -> tuple[object, int]:
         check = store.db.execute("PRAGMA quick_check").fetchone()[0]
         state_bytes = sum(p.stat().st_size for p in store.home.glob("index.sqlite3*") if p.is_file())
         state_over_budget = state_bytes >= DEFAULT_STATE_MIB * MIB
+        indexed, missing = store.db.execute("SELECT count(*),count(CASE WHEN present=0 THEN 1 END) FROM files").fetchone()
+        storage = {"metadata_only": True, "indexed_files": indexed, "missing_files": missing,
+                   "free_page_bytes": store.db.execute("PRAGMA freelist_count").fetchone()[0]
+                   * store.db.execute("PRAGMA page_size").fetchone()[0],
+                   "retention_preview": "agcc prune --days 7 --file-index --compact",
+                   "note": "File sizes in stats describe observed payloads, not bytes stored in SQLite. "
+                           "Event-only pruning retains the file index; free pages require compaction to shrink the file."}
         return {"integrity": check, "home": str(store.home), "state_bytes": state_bytes,
-                "state_budget_mib": DEFAULT_STATE_MIB, "state_over_budget": state_over_budget,
+                "state_budget_mib": DEFAULT_STATE_MIB, "state_over_budget": state_over_budget, "storage": storage,
                 "state_warning": (f"Metadata-only state exceeds {DEFAULT_STATE_MIB:g} MiB; "
                                   "narrow tracked roots and review retention."
                                   if state_over_budget else None),
@@ -459,9 +471,10 @@ def execute(args, store: Store) -> tuple[object, int]:
         return result, 0 if result["complete"] else 1
     if action == "prune":
         cutoff = time.time() - args.days * 86400
-        condition = "at<? AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status<>'running'))"
+        condition = "at<? AND kind NOT IN ('marked','quarantined','restored') AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status<>'running'))"
         result = {"mode": "apply" if args.apply else "preview",
-                  "note": "Index, labels, and quarantine journal are retained. SQLite reuses freed pages."}
+                  "note": ("Old unmarked index metadata may also be forgotten; actual files are untouched."
+                           if args.file_index else "Index, labels, and quarantine journal are retained. SQLite reuses freed pages.")}
         # Scan in table order: the OR's session-index plan otherwise performs
         # millions of random table lookups on a large shared history.
         with store.transaction(immediate=args.apply):
@@ -483,6 +496,9 @@ def execute(args, store: Store) -> tuple[object, int]:
                     else:
                         history["events"] = store.db.execute("SELECT COUNT(*) FROM auto_events WHERE at<?", (cutoff,)).fetchone()[0]
                 result["rule_history"] = history
+            if args.file_index:
+                from .retention import prune_file_index
+                result["file_index"] = prune_file_index(store, cutoff, apply=args.apply)
         if args.compact:
             from .retention import compact
             result["compaction"] = compact(store, apply=args.apply)
@@ -521,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
                                       tag_files=args.tag_files, control=args.control, seconds=args.wait_ready,
                                       config=args.config, no_project_rules=args.no_project_rules,
                                       limits=TrackingLimits(args.max_files, args.max_state_mib),
-                                      allow_memory_state=args.allow_memory_state)
+                                      include_generated=args.include_generated, allow_memory_state=args.allow_memory_state)
         elif args.action in ("watch-status", "watch-stop"):
             seconds = args.wait_ready if args.action == "watch-status" else args.wait
             result, code = control_command(args.home, args.control, stop=args.action == "watch-stop", seconds=seconds)

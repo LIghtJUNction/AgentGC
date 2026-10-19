@@ -15,7 +15,7 @@ The project is **agentgc**; the command-line tool is **agcc**. It ships as **Ski
 - **Cleanup**: preview by default. After explicit confirmation, move files into quarantine on the same filesystem. Restore never overwrites existing files.
 - **Skill**: bundled with the package; print it or install it into your agent's skills directory.
 
-The current version, **0.1.0**, is runnable. It is not a system-wide auditor or a resource limiter.
+The current version, **0.2.0**, is runnable. It is not a system-wide auditor or a resource limiter.
 
 ## Installation
 
@@ -114,7 +114,7 @@ Compact diagnostics distinguish expected link boundaries, unavailable metadata, 
 
 Repeat `--root` to select multiple directories; nested roots are merged. The default root is the current directory. The child still runs in the directory where you started `agcc`; `--root` does not change its working directory. Use `--exclude cache` or `--exclude '*.log'` to exclude paths. Matching uses case-sensitive relative paths or path components, not `.gitignore` syntax.
 
-By default, tracking skips `.git`, AgentGC's own state directory, `.agentgc-quarantine`, symbolic links, Windows reparse points, and non-regular files. It does not automatically ignore `.venv`, build directories, or dependency directories, since these may also contain artifacts you want to manage.
+By default, tracking skips `.git`, AgentGC's own state directory, `.agentgc-quarantine`, symbolic links, Windows reparse points, and non-regular files. It also excludes common build, dependency and tool cache trees by default. Use `--include-generated` to opt in; directory pressure summaries remain available.
 
 ### Tracking boundaries
 
@@ -379,3 +379,33 @@ Tests cover file changes, queries, label invalidation, content-digest checks, li
 ## License
 
 Original materials that their rights holders can license are offered under the [Agent Upstream License (AUL) 1.0-draft.1](LICENSE). Separately licensed third-party material retains its original terms. See [AGENTS.md](AGENTS.md) and [UPSTREAM.toml](UPSTREAM.toml). AUL is a custom draft, not an OSI-approved open-source license.
+
+### Metadata footprint in 0.2.0
+
+Tracking skips high-churn directory components by default: `target`, `build`,
+`CMakeFiles`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`,
+`.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`, `.cache`, `.gradle`, `.next`,
+`.nuxt`, and `.local-tests`. `dist` deliverables remain visible. Use
+`--include-generated` on scan/run/watch/watch-start to opt in, or explicitly
+select a generated directory as a root. Readiness reports effective exclusions.
+Excluded old records are never marked deleted merely because coverage changed.
+Directory pressure/sync still measure generated trees without indexing each file.
+Unchanged scans store only integer IDs in a connection-private SQLite temporary
+table instead of rewriting persistent scan UUIDs on every file. No contents,
+patches or previous file versions are stored.
+
+```sh
+agcc prune --days 7 --file-index --compact
+agcc prune --days 7 --file-index --compact --apply
+```
+
+`--file-index` explicitly forgets old unmarked metadata, including metadata for
+existing files; it never removes filesystem payloads. Preview is the default.
+Manual labels/notes, review hashes, tags, manual observations, quarantine journal
+references, current automatic marks, retained events, unknown session attribution
+and running-session roots are protected. Unknown active roots refuse index pruning;
+on Windows any running session skips index pruning. Preview and apply share the
+same guards; event and index deletion commit together. Manual mark/quarantine/restore
+events are now always retained. Forgotten activity and provenance cannot be recovered;
+a later scan treats forgotten files as new baseline observations. Upgrading never
+automatically deletes old metadata or closes sessions.

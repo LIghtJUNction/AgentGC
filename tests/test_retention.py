@@ -105,3 +105,83 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(result["events"], 0)
         self.assertEqual(result["compaction"]["status"], "complete")
+
+    def test_file_index_preview_matches_apply_and_preserves_protected_metadata(self):
+        names = ['forget', 'recent', 'keep', 'temporary', 'note', 'reviewed', 'tagged',
+                 'manual', 'orphan-session', 'journal', 'marked', 'recent-event', 'orphan-event']
+        for name in names:
+            (self.root / name).write_text('unchanged payload', encoding='utf-8')
+        scan_once(self.store, Scope([self.root], self.store.home))
+        self.store.db.execute('UPDATE files SET changed=0')
+        self.store.db.execute('UPDATE events SET at=0')
+        for name, column, value in [('recent', 'changed', time.time()), ('keep', 'label', 'keep'),
+                                    ('temporary', 'label', 'temporary'), ('note', 'note', 'important'),
+                                    ('reviewed', 'review_hash', 'hash'), ('tagged', 'tag_status', 'written'),
+                                    ('manual', 'source', 'manual-observation'),
+                                    ('orphan-session', 'session_id', 'unknown')]:
+            self.store.db.execute('UPDATE files SET '+column+'=? WHERE path=?', (value, str(self.root / name)))
+        fid = self.store.file(self.root / 'journal')['id']
+        self.store.db.execute("INSERT INTO quarantine VALUES('q',?,'old','new','sig','hash','restored',0,NULL)", (fid,))
+        for name, kind, session in [('marked', 'marked', None), ('recent-event', 'modified', None),
+                                    ('orphan-event', 'modified', 'unknown')]:
+            row = self.store.file(self.root / name)
+            self.store.event(row['path'], kind, 'test', session, row['id'])
+        self.store.db.execute("UPDATE events SET at=0 WHERE kind='marked'")
+        preview, code = self.prune('--file-index', '--compact')
+        self.assertEqual(code, 0)
+        self.assertEqual(preview['file_index']['files'], 1)
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM files').fetchone()[0], len(names))
+        result, code = self.prune('--file-index', '--compact', '--apply')
+        self.assertEqual(code, 0)
+        self.assertEqual(result['file_index']['files'], preview['file_index']['files'])
+        remaining = {Path(row[0]).name for row in self.store.db.execute('SELECT path FROM files')}
+        self.assertEqual(remaining, set(names) - {'forget'})
+        for name in names:
+            self.assertEqual((self.root / name).read_text(encoding='utf-8'), 'unchanged payload')
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM events WHERE kind='marked'").fetchone()[0], 1)
+
+    def test_file_index_protects_active_ancestor_scope_and_unknown_roots(self):
+        for name in ['active/file', 'sibling/file']:
+            path = self.root / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('retain payload', encoding='utf-8')
+        scan_once(self.store, Scope([self.root], self.store.home))
+        self.store.db.execute('UPDATE files SET changed=0')
+        self.store.db.execute('UPDATE events SET at=0')
+        active = self.store.start_session('active', [self.root / 'active'], 'poll')
+        result, code = self.prune('--file-index', '--apply')
+        self.assertEqual(code, 0)
+        import os
+        self.assertEqual(result['file_index']['files'], 0 if os.name == 'nt' else 1)
+        self.assertIsNotNone(self.store.file(self.root / 'active/file'))
+        self.assertEqual(self.store.db.execute('SELECT status FROM sessions WHERE id=?', (active,)).fetchone()[0], 'running')
+        self.store.db.execute("UPDATE sessions SET roots='invalid' WHERE id=?", (active,))
+        result, code = self.prune('--file-index', '--apply')
+        self.assertEqual(code, 0)
+        self.assertTrue(result['file_index']['skipped'])
+
+    def test_file_index_delete_failure_rolls_back_event_pruning(self):
+        path = self.root / 'file'
+        path.write_text('payload', encoding='utf-8')
+        scan_once(self.store, Scope([self.root], self.store.home))
+        self.store.db.execute('UPDATE files SET changed=0')
+        self.store.db.execute('UPDATE events SET at=0')
+        self.store.db.execute("CREATE TRIGGER reject_file_delete BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.prune('--file-index', '--apply')
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM events').fetchone()[0], 1)
+        self.assertIsNotNone(self.store.file(path))
+
+    def test_file_index_protects_path_only_manual_evidence_and_automatic_marks(self):
+        for name in ['marked', 'automatic']:
+            (self.root / name).write_text('payload', encoding='utf-8')
+        scan_once(self.store, Scope([self.root], self.store.home))
+        self.store.db.execute('UPDATE files SET changed=0')
+        self.store.db.execute('UPDATE events SET at=0')
+        self.store.event(str(self.root / 'marked'), 'marked', 'user-review')
+        self.store.db.execute('UPDATE events SET at=0')
+        self.store.db.execute('CREATE TABLE auto_marks(path TEXT)')
+        self.store.db.execute('INSERT INTO auto_marks VALUES(?)', (str(self.root / 'automatic'),))
+        result, code = self.prune('--file-index', '--apply')
+        self.assertEqual(code, 0)
+        self.assertEqual(result['file_index']['files'], 0)

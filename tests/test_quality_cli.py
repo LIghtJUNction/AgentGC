@@ -57,6 +57,9 @@ class QualityCLITests(unittest.TestCase):
         code, result, _, _ = self.invoke("doctor")
         self.assertEqual(code, 0)
         self.assertEqual(result["state_budget_mib"], 100)
+        self.assertTrue(result["storage"]["metadata_only"])
+        self.assertEqual(result["storage"]["indexed_files"], 0)
+        self.assertIn("--file-index", result["storage"]["retention_preview"])
         self.assertFalse(result["state_over_budget"])
         self.assertIsNone(result["state_warning"])
 

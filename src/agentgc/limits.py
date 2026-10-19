@@ -89,7 +89,7 @@ class TrackingLimits:
                 f"Tracking state budget reached ({size} bytes; --max-state-mib {self.max_state_mib:g}). "
                 "Tracking stopped; existing records are retained. AgentGC stores metadata only; its 100 MiB "
                 "default is a design checkpoint. Narrow roots, exclude generated/cache trees, "
-                "and review old completed history with 'agcc prune --days 30'. Do not routinely raise the "
+                "and preview metadata retention with 'agcc prune --days 7 --file-index --compact'. Do not routinely raise the "
                 "budget or rotate to a fresh database."
             )
 

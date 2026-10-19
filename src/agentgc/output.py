@@ -268,7 +268,7 @@ def markdown(data, command: str = 'agcc', offset: int = 0, row_limit: int = DISP
                 'scan': ('session','files','bytes','events','active_sessions','labels'),
                 'stats': ('files','bytes','events','active_sessions','labels'),
                 'doctor': ('integrity','home','state_bytes','state_budget_mib','state_over_budget','state_warning',
-                           'native_backend','files','bytes','events','active_sessions','labels'),
+                           'native_backend','files','bytes','events','active_sessions','labels','storage'),
                 'run': ('session','exit_code'), 'watch': ('session','exit_code'),
                 'session': ('session','roots','agent','backend','started','ended'),
                 'watch-start': ('session','control','ready','roots','excludes','coverage_known','log'),

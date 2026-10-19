@@ -146,7 +146,7 @@ class RulesTests(unittest.TestCase):
         self.assertFalse(glob_match('target/debug','target'))
 
     def test_preview_no_new_state_and_manual_keep_untouched(self):
-        scan_once(self.store,Scope([self.root],self.store.home))
+        scan_once(self.store,Scope([self.root],self.store.home,include_generated=True))
         self.store.db.execute("UPDATE files SET label='keep' WHERE path=?",(str(self.file),))
         result=reconcile(self.store,self.settings(),[self.root],dry_run=True)
         self.assertEqual(result['observations'][0]['state'],'active')
@@ -249,7 +249,7 @@ class RulesTests(unittest.TestCase):
 
     def test_exclusions_preserved_and_link_replacement_not_called_missing(self):
         self.config.write_text(RULE.replace('100 B','1 B'))
-        scope=Scope([self.root],self.store.home,['out'])
+        scope=Scope([self.root],self.store.home,['out'],include_generated=True)
         result=reconcile(self.store,self.settings(),[self.root],include=scope.includes,excludes=scope.excludes)
         self.assertEqual(result['observations'][0]['state'],'inactive')
         reconcile(self.store,self.settings(),[self.root])

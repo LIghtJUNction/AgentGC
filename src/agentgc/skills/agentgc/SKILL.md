@@ -58,6 +58,22 @@ If the command is unavailable, report the tracking gap; do not silently
 install software or claim that tracking happened. A scan after the task is
 only a snapshot and cannot reconstruct missed changes.
 
+Tracking intentionally skips build/dependency/cache trees by default (including
+`target`, `build`, `node_modules`, `.venv`, `__pycache__`, `.cache`, and `.local-tests`).
+Do not opt into `--include-generated` just to observe compiler intermediates.
+Directory-level pressure/sync can measure their growth without retaining each file.
+Effective default exclusions are reported in readiness; they are intended coverage
+boundaries, not accidental tracking gaps. `dist` deliverables remain tracked.
+Only opt into generated trees for an explicit requirement. An explicitly selected
+generated directory root also opts into that selected scope.
+
+For oversized historical stores, preview `agcc prune --days 7 --file-index --compact`.
+`--file-index` irreversibly forgets old unmarked file metadata, even when files
+still exist. It preserves review/recovery evidence and active roots. Never apply
+without authorization for that retention scope. Payloads are never removed.
+Do not close stale running sessions without approval. Installation alone cannot
+repair an oversized store whose protected metadata still exceeds the budget.
+
 ## Start tracking
 
 For a command, wrap it before it starts:

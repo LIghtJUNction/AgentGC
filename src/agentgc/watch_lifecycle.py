@@ -65,7 +65,7 @@ def start_watch(home: Path, roots: list[str | Path] | None = None,
                 control: str | None = None, seconds: float = 30,
                 config: str | Path | None = None, no_project_rules: bool = False,
                 limits: TrackingLimits | None = None,
-                allow_memory_state: bool = False) -> tuple[dict, int]:
+                include_generated: bool = False, allow_memory_state: bool = False) -> tuple[dict, int]:
     """Start without a shell; success requires this child's verified readiness.
 
     Private logs contain only the existing watcher output, never a saved command
@@ -84,7 +84,7 @@ def start_watch(home: Path, roots: list[str | Path] | None = None,
     limits = limits or TrackingLimits()
     check_state_location(home, allow_memory_state)
     limits.check_state(home)
-    scope = Scope(roots or [Path.cwd()], home, excludes)
+    scope = Scope(roots or [Path.cwd()], home, excludes, include_generated=include_generated)
     control = control if control is not None else "watch-" + uuid.uuid4().hex
     target = _control_path(home, control)
     try:
@@ -112,6 +112,8 @@ def start_watch(home: Path, roots: list[str | Path] | None = None,
     command.extend(("watch", "--agent=" + agent, "--backend", backend, "--interval", str(interval),
                     "--reconcile", str(reconcile), "--duration", str(duration), "--control", control,
                     "--max-files", str(limits.max_files), "--max-state-mib", str(limits.max_state_mib)))
+    if include_generated:
+        command.append("--include-generated")
     if allow_memory_state:
         command.append('--allow-memory-state')
     for root in scope.roots:

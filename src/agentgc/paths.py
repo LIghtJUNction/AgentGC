@@ -12,6 +12,13 @@ import sys
 from typing import Iterator
 
 INTERNAL_NAMES = {".git", ".agentgc-quarantine"}
+# These high-churn trees are opt-in. Keep final output directories such as dist
+# visible; pressure inventories can still measure skipped build/cache trees.
+GENERATED_EXCLUDES = (
+    "target", "build", "CMakeFiles", "node_modules", ".venv", "venv",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    ".nox", ".cache", ".gradle", ".next", ".nuxt", ".local-tests",
+)
 
 
 class SafetyError(ValueError):
@@ -82,9 +89,10 @@ def digest(path: Path) -> tuple[str, str]:
 
 
 class Scope:
-    def __init__(self, roots: list[str | Path], home: Path, excludes: list[str] | None = None):
+    def __init__(self, roots: list[str | Path], home: Path, excludes: list[str] | None = None,
+                 *, include_generated: bool = False):
         self.home = absolute(home)
-        self.excludes = excludes or []
+        self.excludes = list(dict.fromkeys((*(() if include_generated else GENERATED_EXCLUDES), *(excludes or []))))
         self.roots: list[Path] = []
         for root in sorted({absolute(r).resolve(strict=True) for r in roots}, key=lambda p: len(p.parts)):
             no_links(root)

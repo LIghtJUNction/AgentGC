@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agentgc.paths import GENERATED_EXCLUDES
+
 import contextlib
 import io
 import json
@@ -47,7 +49,7 @@ class ControlStatusTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             record = json.loads(source.read_text())
             self.assertEqual(record["roots"], [str(self.root)])
-            self.assertEqual(record["excludes"], ["ignored"])
+            self.assertEqual(record["excludes"], [*GENERATED_EXCLUDES, "ignored"])
             publish(source, destination)
         with patch("agentgc.watch_control.os.link", side_effect=complete):
             control.ready(sid, self.scope, 60)
@@ -59,7 +61,7 @@ class ControlStatusTests(unittest.TestCase):
         status = watch_status(self.store, "task")
         self.assertTrue(status["ready"])
         self.assertTrue(status["coverage_known"])
-        self.assertEqual(status["excludes"], ["ignored"])
+        self.assertEqual(status["excludes"], [*GENERATED_EXCLUDES, "ignored"])
 
     def test_stale_and_expiring_health_never_close_a_session(self):
         control, sid = self.ready()

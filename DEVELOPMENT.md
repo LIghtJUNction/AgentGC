@@ -337,3 +337,25 @@ absent until a separate retention and reference-checking design is reviewed.
 
 Do not add a dependency or claim a new platform backend merely because an
 API exists. Implement it, test it, and update the platform table first.
+
+## 0.2.0 state footprint
+
+Scope excludes common generated/dependency/cache trees by default. `--include-generated`
+propagates through background launch; effective readiness exclusions include defaults.
+Explicit generated roots are intentionally selected. Pressure/sync remain directory
+summaries, including generated trees, while tracking avoids per-file index entries.
+Custom exclusions still constrain automatic processing. Scan reconciliation uses
+connection-private temporary integer IDs; unchanged file rows do not churn scan tokens.
+The legacy nullable scan_token column remains readable without rewriting old databases.
+
+`prune --file-index` opts into old unmarked metadata retention; it does not touch
+filesystem payloads. It protects active root ranges (not only last session IDs),
+unknown session attribution, retained events including path-only review evidence,
+manual state, tags, automatic marks and all quarantine journal references. Unknown
+active roots refuse the index phase; Windows conservatively skips with any running
+session. The caller holds the same immediate transaction for event and file pruning;
+previews use the equivalent post-prune event predicate without deleting anything.
+Marked/quarantined/restored events are retained even without --file-index.
+Tests use isolated directories to verify opt-in scope, unchanged scans, preserved
+missing-state boundaries, preview/apply agreement and rollback. Linux is tested locally;
+remote matrix outcomes must be checked separately before claiming other platforms.

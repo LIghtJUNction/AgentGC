@@ -68,7 +68,7 @@ class Tracker:
             cursor = self.store.db.execute(
                 "INSERT INTO files(path,root,size,signature,first_seen,changed,activity,session_id,source,scan_token) "
                 "VALUES(?,?,?,?,?,?,1,?,?,?)",
-                (str(path), root, info.st_size, stamp, now, now, self.session, source, token),
+                (str(path), root, info.st_size, stamp, now, now, self.session, source, None),
             )
             fid = cursor.lastrowid
             kind = "observed" if source == "baseline" else "created"
@@ -79,12 +79,14 @@ class Tracker:
                 "UPDATE files SET root=?,size=?,signature=?,present=1,changed=?,activity=activity+1,"
                 "session_id=?,source=?,scan_token=?,review_hash=NULL,review_signature=NULL,"
                 "label=CASE WHEN label='keep' THEN 'keep' ELSE 'review' END WHERE id=?",
-                (root, info.st_size, stamp, now, self.session, source, token, fid),
+                (root, info.st_size, stamp, now, self.session, source, None, fid),
             )
         else:
             if token:
-                self.store.db.execute("UPDATE files SET scan_token=?,root=? WHERE id=?", (token, root, old["id"]))
+                self.store.db.execute("INSERT OR IGNORE INTO temp.scan_seen VALUES(?)", (old["id"],))
             return
+        if token:
+            self.store.db.execute("INSERT OR IGNORE INTO temp.scan_seen VALUES(?)", (fid,))
         self.store.event(str(path), kind, source, self.session, fid, info.st_size)
         if self.tag_files and source != "baseline":
             row = self.store.db.execute("SELECT label FROM files WHERE id=?", (fid,)).fetchone()
@@ -95,6 +97,10 @@ class Tracker:
         token = str(uuid.uuid4())
         self.errors = []
         self.check_limits()
+        # Only integer identities are needed to reconcile this scan. Rewriting a
+        # UUID into every persistent row amplified idle scans into large WALs.
+        self.store.db.execute("CREATE TEMP TABLE IF NOT EXISTS scan_seen(id INTEGER PRIMARY KEY)")
+        self.store.db.execute("DELETE FROM temp.scan_seen")
         seen = 0
         # Walk outside the write transaction and bound each commit. A full tree
         # scan used to monopolize the shared WAL writer for longer than the busy
@@ -131,8 +137,8 @@ class Tracker:
             for root in ([None] if sys.platform == "win32" else self.scope.roots):
                 after = ""
                 while True:
-                    where = "path>? AND present=1 AND (scan_token IS NULL OR scan_token<>?)"
-                    params: tuple = (after, token)
+                    where = "path>? AND present=1 AND id NOT IN (SELECT id FROM temp.scan_seen)"
+                    params: tuple = (after,)
                     if root is not None:
                         prefix = str(root).rstrip(os.sep) + os.sep
                         upper = prefix[:-1] + chr(ord(os.sep) + 1)

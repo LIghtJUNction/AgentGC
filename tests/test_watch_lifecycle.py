@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agentgc.paths import GENERATED_EXCLUDES
+
 import os
 from pathlib import Path
 import stat
@@ -55,7 +57,7 @@ class WatchLifecycleTests(unittest.TestCase):
         self.assertFalse(result["start_failed"])
         self.assertTrue(result["coverage_known"])
         self.assertEqual(result["roots"], [str(self.root)])
-        self.assertEqual(result["excludes"], ["ignored"])
+        self.assertEqual(result["excludes"], [*GENERATED_EXCLUDES, "ignored"])
         self.assertEqual(result["gap_count"], 0)
         self.assertEqual(result["unresolved_event_count"], 0)
         self.assertIsNone(result["command_exit_code"])
@@ -201,7 +203,7 @@ class WatchLifecycleTests(unittest.TestCase):
         result, code = self.start(agent="--agent-value", excludes=["--exclude-value"])
         self.assertEqual(code, 0, result)
         self.assertEqual(result["agent"], "--agent-value")
-        self.assertEqual(result["excludes"], ["--exclude-value"])
+        self.assertEqual(result["excludes"], [*GENERATED_EXCLUDES, "--exclude-value"])
         stopped, code = control_command(self.home, result["control"], stop=True, seconds=5)
         self.assertEqual(code, 0, stopped)
 
@@ -322,7 +324,7 @@ class WatchLifecycleTests(unittest.TestCase):
         self.assertEqual(result["session"], session)
         self.assertEqual(result["schema_version"], 1)
         self.assertEqual(result["roots"], [str(self.root)])
-        self.assertEqual(result["excludes"], ["ignored"])
+        self.assertEqual(result["excludes"], [*GENERATED_EXCLUDES, "ignored"])
         self.assertTrue(result["coverage_known"])
         self.assertEqual(result["state"], "stopping")
         self.assertEqual(result["status"], "running")
@@ -356,3 +358,18 @@ class WatchLifecycleTests(unittest.TestCase):
         self.assertEqual(result["session_status"], "running")
         self.assertEqual(result["state"], "stopping")
         self.assertEqual(watch_status(owner, "request-snapshot")["status"], "finished")
+
+    def test_generated_opt_in_propagates_to_background_child(self):
+        generated = self.root / 'target' / 'intermediate'
+        generated.parent.mkdir()
+        generated.write_text('generated payload', encoding='utf-8')
+        result, code = self.start(include_generated=True)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['excludes'], [])
+        stopped, code = control_command(self.home, result['control'], stop=True, seconds=5)
+        self.assertEqual(code, 0, stopped)
+        store = Store(self.home, read_only=True)
+        try:
+            self.assertEqual(store.file(generated)['size'], len('generated payload'))
+        finally:
+            store.close()

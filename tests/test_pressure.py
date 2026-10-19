@@ -163,7 +163,7 @@ class PressureTests(unittest.TestCase):
 
     def test_review_notes_cannot_authorize_file_cleanup(self):
         path = self.blob("target/out")
-        scan_once(self.store, Scope([self.root], self.store.home))
+        scan_once(self.store, Scope([self.root], self.store.home, include_generated=True))
         self.store.db.execute("UPDATE files SET label='keep' WHERE path=?", (str(path),))
         result = inventory([self.root], {"build": MIB})
         self.assertEqual(save_reviews(self.store, result), 1)

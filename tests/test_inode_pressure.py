@@ -117,7 +117,7 @@ class InodePressureTests(unittest.TestCase):
         path = self.root / "target/output"
         path.parent.mkdir()
         path.write_text("deliverable")
-        scan_once(self.store, Scope([self.root], self.store.home))
+        scan_once(self.store, Scope([self.root], self.store.home, include_generated=True))
         self.store.db.execute("UPDATE files SET label='keep' WHERE path=?", (str(path),))
         result = self.sample()
         self.assertTrue(result["disks"][0]["urgent"])

@@ -61,7 +61,7 @@ def reconcile(store, config, roots, dry_run=False, max_entries=None, max_seconds
     if any(not r.is_relative_to(project) for r in roots):
         raise SafetyError('Rule sync roots must stay inside the selected project; use pressure for external stores')
     if include is None:
-        include = Scope(roots, store.home, excludes).includes
+        include = Scope(roots, store.home, excludes, include_generated=True).includes
     effective = config if overrides is None else overrides
     rules = effective['rules']
     result = inventory(roots, max_entries=config['limits']['max_entries'] if max_entries is None else max_entries,
