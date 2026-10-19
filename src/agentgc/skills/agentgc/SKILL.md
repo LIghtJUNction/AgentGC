@@ -31,8 +31,11 @@ do not work around it by proliferating temporary databases. When a separate
 project store is necessary, select one persistent project location and reuse it.
 Do not rotate stores to evade a resource budget.
 
-Tracking defaults to 10000 file candidates per scan and 256 MiB for the database
-plus SQLite sidecars. Checkpoints are before write batches, so a single batch
+Tracking defaults to 10000 file candidates per scan and 100 MiB for the metadata
+database plus SQLite sidecars. AgentGC stores no file contents. Above 100 MiB,
+review root scope, generated/cache/backup directories and retained history;
+raising the limit is not the routine fix. Checkpoints are before write batches,
+so a single batch
 and final failure records can exceed the byte budget. A limit stops tracking
 with a visible failure/gap; it never makes omitted files deleted or complete.
 Narrow the selected roots first. Raise `--max-files` / `--max-state-mib` only

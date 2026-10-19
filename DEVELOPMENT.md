@@ -30,11 +30,13 @@ behavior. Incomplete startup baselines still refuse child start/readiness.
 healthy events, retry, retained budget, link replacement and final status.
 `tracker.py` records observations and runs the child command.
 `limits.py` bounds tracking to 10000 file candidates per scan (across selected
-roots and missing-file reconciliation) and 256 MiB of SQLite database/sidecar
+roots and missing-file reconciliation) and 100 MiB of SQLite database/sidecar
 logical bytes by default. Check byte budgets before each scan/native-event write
 batch; one batch and final failure evidence can overshoot. Do not claim an exact
-filesystem quota. A reached limit stops tracking, preserves a gap and skips the
-otherwise repeated final scan/drain. Baseline failure cannot launch the child
+filesystem quota. AgentGC stores file metadata only; a store over 100 MiB is a
+scope/retention design warning, and routine budget increases are discouraged.
+`doctor` reports the threshold. A reached limit stops tracking, preserves a gap
+and skips the otherwise repeated final scan/drain. Baseline failure cannot launch the child
 or publish readiness. Interrupted scans never reconcile their unvisited tail as
 missing. Explicit CLI budgets propagate to background children. Preflight rejects
 known Linux tmpfs/ramfs state before creating store or launch directories, unless

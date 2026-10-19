@@ -311,18 +311,21 @@ on tmpfs/ramfs before creating a database or starting a command. An intentional
 bounded experiment may explicitly use `--allow-memory-state`; other platforms
 do not currently detect memory-backed filesystems.
 
-Tracking defaults to 10000 file candidates per scan and a 256 MiB budget for the
-database and SQLite sidecars. Checks occur before write batches; one batch and
-final failure records may exceed the byte budget. This is not a filesystem quota.
-A limit fails visibly with a gap; failed baselines never start the child or
-publish readiness. Unvisited files are not marked missing. Existing oversized
-stores remain queryable and stoppable but cannot accept new tracking within the
-smaller budget. No automatic deletion, store rotation, migration or backup occurs.
+Tracking defaults to 10000 file candidates per scan and a 100 MiB budget for the
+metadata database and SQLite sidecars. AgentGC stores file metadata, never file
+contents. Above 100 MiB, review whether roots include build outputs, caches,
+backups or other high-churn directories, and whether retained history is useful;
+raising the budget is not the routine fix. Checks occur before write batches, so
+one batch and final failure records may slightly exceed the budget. This is not
+a filesystem quota. `doctor` reports whether the store exceeds 100 MiB. A limit
+fails visibly with a gap; failed baselines never start the child or publish
+readiness. Unvisited files are not marked missing. Existing oversized stores
+remain queryable and stoppable but cannot accept new tracking within the smaller
+budget. No automatic deletion, store rotation, migration or backup occurs.
 
 ```sh
 agcc watch-start --root ./src --root ./tests --agent assistant
-# Raise budgets only for an explicit larger scope, not as an automatic retry.
-agcc run --root . --max-files 20000 --max-state-mib 512 -- your-command
+agcc run --root ./src --root ./tests -- your-command
 ```
 
 SQLite uses WAL, write transactions, and a busy timeout. Multiple local processes may share a state directory. Keep state on a local filesystem; network shares are not recommended. On POSIX, new state directories use `0700` and databases use `0600`; on Windows, directory permissions are inherited. Storage is not encrypted.

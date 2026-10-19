@@ -141,6 +141,9 @@ class TrackingLimitsTests(unittest.TestCase):
         with self.assertRaises(TrackingLimit):
             TrackingLimits(max_state_mib=64 / MIB).check_state(self.home)
 
+    def test_default_state_budget_is_100_mib(self):
+        self.assertEqual(TrackingLimits().max_state_mib, 100)
+
     def test_oversized_state_refuses_tracking_but_remains_queryable(self):
         self.files(1)
         store = self.store()

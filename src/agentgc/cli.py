@@ -24,7 +24,7 @@ from .output import DISPLAY_LIMIT, markdown
 from .diagnostics import summarize
 from .session_state import session_result
 from .watch_lifecycle import start_watch
-from .limits import TrackingLimits, check_state_location
+from .limits import DEFAULT_STATE_MIB, TrackingLimits, check_state_location
 
 
 def positive(value: str) -> float:
@@ -122,8 +122,8 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument("--exclude", action="append", default=[], help="exclude a relative glob or a matching path component")
         cmd.add_argument('--max-files', type=file_budget, default=10000,
                          help='maximum file candidates per scan across all roots (default: 10000); excess fails visibly')
-        cmd.add_argument('--max-state-mib', type=positive, default=256,
-                         help='state database and sidecar byte budget in MiB (default: 256); never deletes records')
+        cmd.add_argument('--max-state-mib', type=positive, default=DEFAULT_STATE_MIB,
+                         help='metadata database and sidecar budget in MiB (default: 100); never deletes records')
         cmd.add_argument('--allow-memory-state', action='store_true',
                          help='explicitly allow bounded tracking state on Linux tmpfs/ramfs; prefer stable disk-backed state')
         if name != "scan":
@@ -408,7 +408,12 @@ def execute(args, store: Store) -> tuple[object, int]:
     if action == "doctor":
         check = store.db.execute("PRAGMA quick_check").fetchone()[0]
         state_bytes = sum(p.stat().st_size for p in store.home.glob("index.sqlite3*") if p.is_file())
+        state_over_budget = state_bytes >= DEFAULT_STATE_MIB * MIB
         return {"integrity": check, "home": str(store.home), "state_bytes": state_bytes,
+                "state_budget_mib": DEFAULT_STATE_MIB, "state_over_budget": state_over_budget,
+                "state_warning": (f"Metadata-only state exceeds {DEFAULT_STATE_MIB:g} MiB; "
+                                  "narrow tracked roots and review retention."
+                                  if state_over_budget else None),
                 "native_backend": "inotify" if sys.platform.startswith("linux") else "not implemented; polling available",
                 "pending_recovery": recover(store), **store.stats()}, 0 if check == "ok" else 1
     if action == "reviews":

@@ -53,6 +53,19 @@ class QualityCLITests(unittest.TestCase):
         return self.invoke("run", "--root", self.root, "--backend", "poll", "--interval", "0.1",
                            *options, "--", sys.executable, "-c", f"raise SystemExit({child_code})")
 
+    def test_doctor_reports_the_metadata_storage_budget(self):
+        code, result, _, _ = self.invoke("doctor")
+        self.assertEqual(code, 0)
+        self.assertEqual(result["state_budget_mib"], 100)
+        self.assertFalse(result["state_over_budget"])
+        self.assertIsNone(result["state_warning"])
+
+        with patch("agentgc.cli.DEFAULT_STATE_MIB", 0.000001):
+            code, result, _, _ = self.invoke("doctor")
+        self.assertEqual(code, 0)
+        self.assertTrue(result["state_over_budget"])
+        self.assertIn("narrow tracked roots", result["state_warning"])
+
     def assert_quality(self, result, *, command, command_code, tracking, gaps, unresolved):
         self.assertEqual(result["schema_version"], 1)
         self.assertIsInstance(result["roots"], list)

@@ -12,6 +12,7 @@ import sys
 from .paths import SafetyError, absolute, no_links
 
 MIB = 1024 * 1024
+DEFAULT_STATE_MIB = 100
 
 
 class TrackingLimit(SafetyError):
@@ -56,7 +57,7 @@ def check_state_location(home: Path, allow_memory_state: bool = False) -> None:
 @dataclass(frozen=True)
 class TrackingLimits:
     max_files: int = 10000
-    max_state_mib: float = 256
+    max_state_mib: float = DEFAULT_STATE_MIB
 
     def __post_init__(self) -> None:
         if not isinstance(self.max_files, int) or isinstance(self.max_files, bool) or self.max_files <= 0:
@@ -86,10 +87,10 @@ class TrackingLimits:
         if size >= self.max_state_mib * MIB:
             raise TrackingLimit(
                 f"Tracking state budget reached ({size} bytes; --max-state-mib {self.max_state_mib:g}). "
-                "Tracking stopped; existing records are retained. Preview authorized history retention with "
-                "'agcc prune --days 30 --compact'; pruning and compaction require explicit --apply. "
-                "Review this store or explicitly choose "
-                "a larger budget. Do not rotate to fresh databases to bypass the limit."
+                "Tracking stopped; existing records are retained. AgentGC stores metadata only; its 100 MiB "
+                "default is a design checkpoint. Narrow roots, exclude generated/cache trees, "
+                "and review old completed history with 'agcc prune --days 30'. Do not routinely raise the "
+                "budget or rotate to a fresh database."
             )
 
     def check_scan(self, files: int) -> None:
