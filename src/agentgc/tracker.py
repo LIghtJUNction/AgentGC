@@ -149,12 +149,13 @@ class Tracker:
                         (*params, batch_size),
                     ).fetchall()
                     if rows:
-                        self.check_limits(seen + len(rows))
-                        seen += len(rows)
-                        with self.store.transaction():
-                            for row in rows:
-                                path = Path(row["path"])
-                                if self.scope.includes(path):
+                        candidates = [Path(row["path"]) for row in rows
+                                      if self.scope.includes(Path(row["path"]))]
+                        self.check_limits(seen + len(candidates))
+                        seen += len(candidates)
+                        if candidates:
+                            with self.store.transaction():
+                                for path in candidates:
                                     self.sync(path, source, token)
                         after = rows[-1]["path"]
                     if len(rows) < batch_size:

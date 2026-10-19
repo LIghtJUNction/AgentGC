@@ -53,7 +53,9 @@ class ScanStorageTests(unittest.TestCase):
                 self.assertEqual(store.db.execute('SELECT count(*) FROM files').fetchone()[0], 2 + len(GENERATED_EXCLUDES))
                 for name in GENERATED_EXCLUDES:
                     (root / name / 'intermediate').unlink()
-                scan_once(store, Scope([root], store.home))
+                from agentgc.limits import TrackingLimits
+                # Old excluded rows cannot consume the new narrow scan budget.
+                scan_once(store, Scope([root], store.home), TrackingLimits(max_files=2))
                 for name in GENERATED_EXCLUDES:
                     self.assertEqual(store.file(root / name / 'intermediate')['present'], 1)
                 # An explicitly selected generated root is an intentional scope.
