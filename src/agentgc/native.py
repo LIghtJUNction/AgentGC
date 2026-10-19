@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import os
@@ -107,10 +108,8 @@ class Inotify:
             descriptors.append(self.wake_fd)
         ready = select.select(descriptors, [], [], timeout)[0]
         if self.wake_fd is not None and self.wake_fd in ready:
-            try:
+            with contextlib.suppress(BlockingIOError):
                 os.read(self.wake_fd, 4096)
-            except BlockingIOError:
-                pass
         if self.fd not in ready:
             return notices, rescan, overflow
         for _ in range(8):
