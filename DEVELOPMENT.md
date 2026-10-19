@@ -184,6 +184,16 @@ On POSIX, source-only tests can use:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
+On Linux, if `/tmp` is tmpfs, select a verified disk-backed temporary directory
+outside Git working trees (including home-directory dotfile repositories):
+
+```sh
+TMPDIR=/var/tmp PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+Verify the selected filesystem first. Keep the tmpfs and Git cleanup guards
+enabled; do not weaken them to make test fixtures pass.
+
 The tests create isolated temporary workspaces. They never clean user files.
 `tests/process_helpers.py` provides bounded direct-child cleanup: terminate, wait
 up to 3 seconds, then kill and wait up to 3 seconds if needed; close captured pipes
