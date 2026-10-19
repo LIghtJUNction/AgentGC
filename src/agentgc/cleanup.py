@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 import shutil
@@ -195,10 +196,8 @@ def restore(store: Store, qid: str) -> dict:
         )
         store.event(str(target), "restored", "user-review", file_id=row["file_id"], detail=qid)
     source.unlink()
-    try:
+    with contextlib.suppress(OSError):
         source.parent.rmdir()
-    except OSError:
-        pass
     return {"id": qid, "path": str(target), "status": "restored", "label": "keep"}
 
 
